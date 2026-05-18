@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import queue
 import shutil
 import socket
 import subprocess
@@ -33,11 +35,13 @@ PROMPT_DIR = REPO_ROOT / ".tmp" / "codex_governance_prompts"
 MAILBOX_ROOT = REPO_ROOT / ".tmp" / "codex_governance_mailbox"
 SESSION_LOG_DIR = REPO_ROOT / ".tmp" / "codex_governance_logs"
 RUNNER = SCRIPT_DIR / "run_codex_prompt.py"
+CODEX_TERMINAL_DIR = REPO_ROOT / "tools" / "codex_terminal"
 MAX_CODEX_TERMINALS = int(os.environ.get("CODEX_GOVERNANCE_MAX_DEPARTMENTS", "2"))
-API_VERSION = 5
+API_VERSION = 7
 ACTIVE_PROCESSES: list[subprocess.Popen] = []
 SESSIONS: list[dict] = []
 ASSIGNMENT_QUEUE: list[dict] = []
+BROWSER_TERMINALS: dict[str, dict] = {}
 REPORTS_BY_ZHONGSHU: dict[str, list[dict]] = {}
 PLANS_BY_ZHONGSHU: dict[str, dict] = {}
 STATE_LOCK = threading.RLock()
@@ -182,6 +186,211 @@ def start_ttyd_sidecar(session_id: str, cwd: Path) -> dict:
         "pid": process.pid,
         "process": process,
     }
+
+
+def browser_terminal_public(item: dict) -> dict:
+    process = item.get("_process")
+    if process is not None:
+        item["status"] = "running" if process.poll() is None else "exited"
+        if item["status"] == "exited":
+            item["ended_at"] = item.get("ended_at") or now_text()
+    return {key: value for key, value in item.items() if not key.startswith("_")}
+
+
+def browser_terminal_payload() -> dict:
+    return {"ok": True, "terminals": [browser_terminal_public(item) for item in BROWSER_TERMINALS.values()]}
+
+
+def powershell_encoded_command(command: str) -> str:
+    return base64.b64encode(command.encode("utf-16le")).decode("ascii")
+
+
+def build_session_preview_shell_args(log_path: Path, title: str) -> str:
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f"$title = {ps_quote(title)}; "
+        f"$path = {ps_quote(str(log_path))}; "
+        "Write-Host \"[governance-preview] $title\"; "
+        "Write-Host \"[governance-preview] transcript: $path\"; "
+        "while (-not (Test-Path -LiteralPath $path)) { Start-Sleep -Milliseconds 200 }; "
+        "Get-Content -LiteralPath $path -Wait -Tail 80"
+    )
+    return f"-NoLogo -NoProfile -EncodedCommand {powershell_encoded_command(command)}"
+
+
+def build_powershell_shell_args(command: str) -> str:
+    return f"-NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand {powershell_encoded_command(command)}"
+
+
+def sync_session_browser_terminal(item: dict) -> None:
+    session_id = str(item.get("session_id", "")).strip()
+    if not session_id:
+        return
+    for session in SESSIONS:
+        if session.get("id") != session_id:
+            continue
+        session["browser_terminal_id"] = item.get("id")
+        session["browser_terminal_kind"] = item.get("kind", "session_preview")
+        session["browser_terminal_scope"] = item.get("scope", "session")
+        session["browser_terminal_title"] = item.get("title") or session.get("title") or session_id
+        session["browser_terminal_status"] = item.get("status", "unknown")
+        session["browser_terminal_url"] = item.get("url")
+        session["browser_terminal_started_at"] = item.get("started_at")
+        session["browser_terminal_ended_at"] = item.get("ended_at")
+        return
+
+
+def start_browser_terminal_sidecar(
+    *,
+    title: str,
+    cwd: Path,
+    shell: str = "",
+    shell_args: str = "",
+    scope: str = "global",
+    session_id: str = "",
+    kind: str = "interactive",
+) -> dict:
+    if scope == "global":
+        for item in BROWSER_TERMINALS.values():
+            process = item.get("_process")
+            if item.get("scope") != "global" or process is None or process.poll() is not None:
+                continue
+            item["status"] = "running"
+            return {"ok": True, "terminal": browser_terminal_public(item)}
+    elif session_id:
+        for item in BROWSER_TERMINALS.values():
+            process = item.get("_process")
+            if item.get("session_id") != session_id or process is None or process.poll() is not None:
+                continue
+            item["status"] = "running"
+            sync_session_browser_terminal(item)
+            return {"ok": True, "terminal": browser_terminal_public(item)}
+    if not CODEX_TERMINAL_DIR.exists():
+        raise ValueError(f"missing browser terminal prototype: {CODEX_TERMINAL_DIR}")
+    if not (CODEX_TERMINAL_DIR / "node_modules").exists():
+        raise ValueError("tools/codex_terminal/node_modules missing; run npm install in tools/codex_terminal")
+
+    terminal_id = new_session_id("browser-terminal")
+    env = os.environ.copy()
+    env["CODEX_TERMINAL_HOST"] = "127.0.0.1"
+    env["CODEX_TERMINAL_PORT"] = "0"
+    env["CODEX_TERMINAL_CWD"] = str(cwd)
+    if shell:
+        env["CODEX_TERMINAL_SHELL"] = shell
+    if shell_args:
+        env["CODEX_TERMINAL_SHELL_ARGS"] = shell_args
+
+    process = subprocess.Popen(
+        ["node", "server.js", "--host", "127.0.0.1", "--port", "0"],
+        cwd=CODEX_TERMINAL_DIR,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    output_queue: queue.Queue[str] = queue.Queue()
+    output_lines: list[str] = []
+
+    def collect_output() -> None:
+        if process.stdout is None:
+            return
+        for line in process.stdout:
+            output_queue.put(line.rstrip())
+
+    threading.Thread(target=collect_output, daemon=True).start()
+    url = ""
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if process.poll() is not None:
+            break
+        try:
+            line = output_queue.get(timeout=0.2)
+        except queue.Empty:
+            continue
+        output_lines.append(line)
+        if line.startswith("[codex-terminal] url="):
+            url = line.split("=", 1)[1].strip()
+            break
+    if not url:
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        raise ValueError("browser terminal did not report a local URL: " + " | ".join(output_lines[-6:]))
+
+    item = {
+        "id": terminal_id,
+        "status": "running",
+        "pid": process.pid,
+        "url": url,
+        "host": "127.0.0.1",
+        "started_at": now_text(),
+        "ended_at": None,
+        "shell": shell or "default",
+        "shell_args": shell_args,
+        "cwd": str(cwd),
+        "scope": scope,
+        "kind": kind,
+        "title": title,
+        "output_preview": output_lines[-6:],
+        "_process": process,
+    }
+    if session_id:
+        item["session_id"] = session_id
+    BROWSER_TERMINALS[terminal_id] = item
+    sync_session_browser_terminal(item)
+    return {"ok": True, "terminal": browser_terminal_public(item)}
+
+
+def start_browser_terminal(shell: str = "", shell_args: str = "") -> dict:
+    return start_browser_terminal_sidecar(
+        title="本机终端",
+        cwd=REPO_ROOT,
+        shell=shell,
+        shell_args=shell_args,
+        scope="global",
+        kind="interactive",
+    )
+
+
+def start_session_browser_terminal(session_id: str) -> dict:
+    session = get_session(session_id)
+    if session is None:
+        raise ValueError(f"unknown session: {session_id}")
+    log_path_text = str(session.get("log_path", "")).strip()
+    if not log_path_text:
+        raise ValueError(f"session log_path missing: {session_id}")
+    shell = "powershell.exe"
+    shell_args = build_session_preview_shell_args(Path(log_path_text), str(session.get("title") or session_id))
+    return start_browser_terminal_sidecar(
+        title=f"{session.get('title', session_id)} transcript preview",
+        cwd=REPO_ROOT,
+        shell=shell,
+        shell_args=shell_args,
+        scope="session",
+        session_id=session_id,
+        kind="session_preview",
+    )
+
+
+def close_browser_terminal(terminal_id: str) -> dict:
+    item = BROWSER_TERMINALS.get(terminal_id)
+    if item is None:
+        raise ValueError("unknown browser terminal")
+    process = item.get("_process")
+    if process is not None and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    item["status"] = "exited"
+    item["ended_at"] = item.get("ended_at") or now_text()
+    sync_session_browser_terminal(item)
+    return {"ok": True, "terminal": browser_terminal_public(item)}
 
 
 def write_prompt(prefix: str, prompt: str) -> Path:
@@ -384,6 +593,15 @@ def refresh_sessions() -> None:
         session["ttyd_status"] = "running" if ttyd_running else "exited"
         if not ttyd_running and session.get("ttyd_pid"):
             session["ttyd_ended_at"] = session.get("ttyd_ended_at") or now_text()
+    for item in BROWSER_TERMINALS.values():
+        process = item.get("_process")
+        if process is None:
+            continue
+        running = process.poll() is None
+        item["status"] = "running" if running else "exited"
+        if not running:
+            item["ended_at"] = item.get("ended_at") or now_text()
+        sync_session_browser_terminal(item)
 
 
 def active_terminal_count() -> int:
@@ -400,12 +618,21 @@ def active_session_count(session_kind: str | None = None) -> int:
     )
 
 
+def department_occupies_slot(session: dict) -> bool:
+    return (
+        session.get("session_kind") == SESSION_KIND_DEPARTMENT
+        and session.get("status") == "running"
+        and session.get("report_status") != "reported"
+    )
+
+
 def active_zhongshu_count() -> int:
     return active_session_count(SESSION_KIND_ZHONGSHU)
 
 
 def active_department_count() -> int:
-    return active_session_count(SESSION_KIND_DEPARTMENT)
+    refresh_sessions()
+    return sum(1 for session in SESSIONS if department_occupies_slot(session))
 
 
 def get_session(session_id: str, session_kind: str | None = None) -> dict | None:
@@ -647,15 +874,26 @@ def register_zhongshu_plan(parent_session_id: str, payload: dict, *, source: str
     if not isinstance(assignments, list):
         raise ValueError("assignments must be a list")
     normalized_assignments = [normalize_plan_assignment(item) for item in assignments]
-    requested_confirmation = payload.get("needs_confirmation", nested_plan.get("needs_confirmation", True))
+    requested_confirmation = payload.get("needs_confirmation", nested_plan.get("needs_confirmation", False))
+    selected_assignments = [
+        normalize_assignment(item, parent_session_id)
+        for item in normalized_assignments
+        if item.get("selected", True)
+    ]
+    if selected_assignments:
+        auto_dispatch = queue_assignments(selected_assignments)
+    else:
+        auto_dispatch = {"started": [], "queued_count": 0, "active": active_department_count()}
     plan = {
         "session_id": parent_session_id,
         "summary": str(payload.get("summary", nested_plan.get("summary", ""))).strip() or "中书省已生成分派方案。",
         "reported_at": payload.get("reported_at", now_text()),
         "source": source,
         "ready": True,
-        "needs_confirmation": bool(normalized_assignments) and bool(requested_confirmation),
+        "needs_confirmation": False,
+        "requested_confirmation": bool(normalized_assignments) and bool(requested_confirmation),
         "assignments": normalized_assignments,
+        "auto_dispatch": auto_dispatch,
         "active_department_sessions": active_department_count(),
         "max_department_sessions": MAX_CODEX_TERMINALS,
         "active_zhongshu_sessions": active_zhongshu_count(),
@@ -664,6 +902,7 @@ def register_zhongshu_plan(parent_session_id: str, payload: dict, *, source: str
     PLANS_BY_ZHONGSHU[parent_session_id] = plan
     session["plan_status"] = "ready"
     session["plan_reported_at"] = plan["reported_at"]
+    session["plan_auto_dispatch"] = auto_dispatch
     return plan
 
 
@@ -1026,17 +1265,17 @@ def start_codex_terminal(
         prompt_path,
         log_path,
     )
-    process = subprocess.Popen(
-        [
-            "powershell",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ],
+    browser_terminal = start_browser_terminal_sidecar(
+        title=window_title,
         cwd=REPO_ROOT,
-        creationflags=subprocess.CREATE_NEW_CONSOLE,
+        shell="powershell.exe",
+        shell_args=build_powershell_shell_args(script),
+        scope="session",
+        session_id=resolved_session_id,
+        kind="codex_session",
     )
+    terminal = browser_terminal["terminal"]
+    process = BROWSER_TERMINALS[terminal["id"]]["_process"]
     ACTIVE_PROCESSES.append(process)
     try:
         ttyd = start_ttyd_sidecar(resolved_session_id, REPO_ROOT)
@@ -1064,6 +1303,13 @@ def start_codex_terminal(
         "ended_at": None,
         "_process": process,
     }
+    session["browser_terminal_id"] = terminal.get("id")
+    session["browser_terminal_kind"] = terminal.get("kind")
+    session["browser_terminal_scope"] = terminal.get("scope")
+    session["browser_terminal_title"] = terminal.get("title")
+    session["browser_terminal_status"] = terminal.get("status")
+    session["browser_terminal_url"] = terminal.get("url")
+    session["browser_terminal_started_at"] = terminal.get("started_at")
     session["ttyd_enabled"] = ttyd.get("enabled", False)
     session["ttyd_available"] = ttyd.get("available", False)
     session["ttyd_status"] = ttyd.get("status", "disabled")
@@ -1107,6 +1353,7 @@ def start_codex_terminal(
         "active_department_sessions": active_department_count(),
         "active_sessions_total": active_session_count(),
         "session": session_public(session),
+        "browser_terminal": terminal,
     }
 
 
@@ -1290,7 +1537,7 @@ def build_zhongshu_prompt(task: str, launcher_url: str, session_id: str) -> str:
         f"{ZHONGSHU_CONTINUATION_POLICY}"
         f"先读 AGENTS.md；只在范围不清时跑治理报告。生成精简分派 POST {launcher_url}/api/report_zhongshu_plan session_id={session_id}。"
         f"合理使用最多 2 个部门空位：可拆成实现/验证/文档/复核两块时同时派两个；只有一个可执行块才派一个。"
-        f"确认后只看收件箱 {launcher_url}/api/zhongshu_inbox?id={session_id}。遇 429/request limit：等待后低并发重试。"
+        f"分派方案回传后 launcher 自动启动下级部门；只看收件箱 {launcher_url}/api/zhongshu_inbox?id={session_id}。遇 429/request limit：等待后低并发重试。"
     )
 
 
@@ -1433,6 +1680,7 @@ def build_status_payload(*, include_session_lists: bool = True) -> dict:
         "zhongshu_model": ZHONGSHU_MODEL,
         "department_model": DEPARTMENT_MODEL,
         "ttyd": ttyd,
+        "browser_terminals": [browser_terminal_public(item) for item in BROWSER_TERMINALS.values()],
         "queue": queue_snapshot(),
         "department_queue": queue_snapshot(),
         "sessions": sessions,
@@ -1534,6 +1782,9 @@ class LauncherHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/sessions":
             self.send_json(build_status_payload())
             return
+        if parsed.path == "/api/browser_terminals":
+            self.send_json(browser_terminal_payload())
+            return
         if parsed.path == "/api/session_stream":
             session_id = str(query.get("id", [""])[0]).strip()
             if not session_id:
@@ -1606,6 +1857,26 @@ class LauncherHandler(BaseHTTPRequestHandler):
                 if not session_id:
                     raise ValueError("session_id is required")
                 self.send_json(send_session_input(session_id, str(payload.get("input", ""))))
+                return
+
+            if parsed.path == "/api/browser_terminal/start":
+                shell = str(payload.get("shell", "")).strip()
+                shell_args = str(payload.get("shell_args", "")).strip()
+                self.send_json(start_browser_terminal(shell, shell_args))
+                return
+
+            if parsed.path == "/api/session_browser_terminal/start":
+                session_id = str(payload.get("session_id", "")).strip()
+                if not session_id:
+                    raise ValueError("session_id is required")
+                self.send_json(start_session_browser_terminal(session_id))
+                return
+
+            if parsed.path == "/api/browser_terminal/close":
+                terminal_id = str(payload.get("id", "")).strip()
+                if not terminal_id:
+                    raise ValueError("id is required")
+                self.send_json(close_browser_terminal(terminal_id))
                 return
 
             if parsed.path == "/api/plan_assignments":

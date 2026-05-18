@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 import sys
+import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import codex_launcher
@@ -11,6 +12,8 @@ class ZhongshuPlanTests(unittest.TestCase):
         codex_launcher.SESSIONS.clear()
         codex_launcher.REPORTS_BY_ZHONGSHU.clear()
         codex_launcher.PLANS_BY_ZHONGSHU.clear()
+        codex_launcher.BROWSER_TERMINALS.clear()
+        codex_launcher.ASSIGNMENT_QUEUE.clear()
 
     def test_empty_plan_does_not_require_confirmation(self):
         session_id = "zhongshu-test-empty"
@@ -42,25 +45,37 @@ class ZhongshuPlanTests(unittest.TestCase):
             }
         )
 
-        plan = codex_launcher.register_zhongshu_plan(
-            session_id,
-            {
-                "plan": {
-                    "summary": "嵌套计划。",
-                    "assignments": [
-                        {
-                            "department": "zhilibu",
-                            "task": "更新文档。",
-                        }
-                    ],
-                }
-            },
-            source="test",
-        )
+        original_queue = codex_launcher.queue_assignments
+        queued = []
+        codex_launcher.queue_assignments = lambda assignments: queued.extend(assignments) or {
+            "started": [],
+            "queued_count": len(assignments),
+            "active": 0,
+        }
+        try:
+            plan = codex_launcher.register_zhongshu_plan(
+                session_id,
+                {
+                    "plan": {
+                        "summary": "嵌套计划。",
+                        "assignments": [
+                            {
+                                "department": "zhilibu",
+                                "task": "更新文档。",
+                            }
+                        ],
+                    }
+                },
+                source="test",
+            )
+        finally:
+            codex_launcher.queue_assignments = original_queue
 
-        self.assertTrue(plan["needs_confirmation"])
+        self.assertFalse(plan["needs_confirmation"])
         self.assertEqual(plan["summary"], "嵌套计划。")
         self.assertEqual(plan["assignments"][0]["department"], "zhilibu")
+        self.assertEqual(plan["auto_dispatch"]["queued_count"], 1)
+        self.assertEqual(queued[0]["parent_session_id"], session_id)
 
     def test_auto_notify_starts_fallback_session_when_window_missing(self):
         parent_session_id = "zhongshu-test-notify"
@@ -166,6 +181,54 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertIn("无需继续观察该部门终端", prompt)
         self.assertNotIn("观察窗", prompt)
         self.assertNotIn("终端无新输出", prompt)
+
+    def test_start_zhongshu_starts_browser_terminal(self):
+        original_start_codex = codex_launcher.start_codex_terminal
+        original_start_browser = codex_launcher.start_browser_terminal
+        browser_started = []
+
+        def fake_start_codex(prompt, prefix, title, model, *, session_kind, parent_session_id=None, session_id=None):
+            session = {
+                "id": session_id,
+                "session_kind": session_kind,
+                "department": prefix,
+                "title": title,
+                "status": "running",
+                "model": model or codex_launcher.ZHONGSHU_MODEL,
+                "unread_result_count": 0,
+                "child_department_ids": [],
+            }
+            codex_launcher.SESSIONS.insert(0, session)
+            browser_started.append(True)
+            return {
+                "ok": True,
+                "session": codex_launcher.session_public(session),
+                "terminal": {
+                    "id": "browser-terminal-test",
+                    "status": "running",
+                    "scope": "session",
+                    "kind": "codex_session",
+                    "url": "http://127.0.0.1:54321/?token=abc",
+                },
+                "browser_terminal": {
+                    "id": "browser-terminal-test",
+                    "status": "running",
+                    "scope": "session",
+                    "kind": "codex_session",
+                    "url": "http://127.0.0.1:54321/?token=abc",
+                },
+            }
+
+        try:
+            codex_launcher.start_codex_terminal = fake_start_codex
+            result = codex_launcher.start_zhongshu_session("整理任务。")
+        finally:
+            codex_launcher.start_codex_terminal = original_start_codex
+            codex_launcher.start_browser_terminal = original_start_browser
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["browser_terminal"]["id"], "browser-terminal-test")
+        self.assertEqual(browser_started, [True])
 
     def test_department_prompt_uses_mailbox_only_report(self):
         parent_session_id = "zhongshu-test-report"
@@ -332,6 +395,132 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertIn("available", payload["ttyd"])
         self.assertIn("port", payload["ttyd"])
 
+    def test_start_browser_terminal_uses_loopback_and_tokenized_url(self):
+        started = []
+        original_popen = codex_launcher.subprocess.Popen
+        original_dir = codex_launcher.CODEX_TERMINAL_DIR
+
+        class FakeProcess:
+            pid = 2468
+            stdout = iter(
+                [
+                    "[codex-terminal] shell=powershell.exe\n",
+                    "[codex-terminal] cwd=E:\\repo\n",
+                    "[codex-terminal] url=http://127.0.0.1:54321/?token=abc\n",
+                ]
+            )
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(command, **kwargs):
+            started.append((command, kwargs))
+            return FakeProcess()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            terminal_dir = Path(tmp)
+            (terminal_dir / "node_modules").mkdir()
+            try:
+                codex_launcher.subprocess.Popen = fake_popen
+                codex_launcher.CODEX_TERMINAL_DIR = terminal_dir
+                result = codex_launcher.start_browser_terminal()
+            finally:
+                codex_launcher.subprocess.Popen = original_popen
+                codex_launcher.CODEX_TERMINAL_DIR = original_dir
+                codex_launcher.BROWSER_TERMINALS.clear()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["terminal"]["host"], "127.0.0.1")
+        self.assertEqual(result["terminal"]["url"], "http://127.0.0.1:54321/?token=abc")
+        self.assertEqual(started[0][0], ["node", "server.js", "--host", "127.0.0.1", "--port", "0"])
+        self.assertEqual(started[0][1]["env"]["CODEX_TERMINAL_HOST"], "127.0.0.1")
+        self.assertEqual(started[0][1]["env"]["CODEX_TERMINAL_PORT"], "0")
+
+    def test_build_session_preview_shell_args_tails_transcript_log(self):
+        shell_args = codex_launcher.build_session_preview_shell_args(
+            Path("E:/repo/.tmp/session.log"),
+            "中书省",
+        )
+
+        self.assertTrue(shell_args.startswith("-NoLogo -NoProfile -EncodedCommand "))
+        encoded = shell_args.split(" ", 3)[-1]
+        decoded = codex_launcher.base64.b64decode(encoded).decode("utf-16le")
+        self.assertIn("Get-Content", decoded)
+        self.assertIn("-Wait", decoded)
+        self.assertIn("-Tail 80", decoded)
+        self.assertIn("session.log", decoded)
+        self.assertIn("中书省", decoded)
+
+    def test_start_session_browser_terminal_uses_loopback_and_updates_session(self):
+        started = []
+        original_popen = codex_launcher.subprocess.Popen
+        original_dir = codex_launcher.CODEX_TERMINAL_DIR
+        session_id = "zhongshu-preview"
+        codex_launcher.SESSIONS.append(
+            {
+                "id": session_id,
+                "session_kind": codex_launcher.SESSION_KIND_ZHONGSHU,
+                "department": "zhongshu",
+                "title": "中书省",
+                "status": "running",
+                "model": "gpt-5.5",
+                "pid": 321,
+                "log_path": "E:/repo/.tmp/zhongshu.log",
+            }
+        )
+
+        class FakeProcess:
+            pid = 2468
+            stdout = iter(
+                [
+                    "[codex-terminal] shell=powershell.exe\n",
+                    "[codex-terminal] cwd=E:\\repo\n",
+                    "[codex-terminal] url=http://127.0.0.1:54321/?token=session-preview\n",
+                ]
+            )
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(command, **kwargs):
+            started.append((command, kwargs))
+            return FakeProcess()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            terminal_dir = Path(tmp)
+            (terminal_dir / "node_modules").mkdir()
+            try:
+                codex_launcher.subprocess.Popen = fake_popen
+                codex_launcher.CODEX_TERMINAL_DIR = terminal_dir
+                result = codex_launcher.start_session_browser_terminal(session_id)
+            finally:
+                codex_launcher.subprocess.Popen = original_popen
+                codex_launcher.CODEX_TERMINAL_DIR = original_dir
+                codex_launcher.BROWSER_TERMINALS.clear()
+                codex_launcher.SESSIONS.clear()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["terminal"]["host"], "127.0.0.1")
+        self.assertEqual(result["terminal"]["session_id"], session_id)
+        self.assertEqual(result["terminal"]["url"], "http://127.0.0.1:54321/?token=session-preview")
+        self.assertEqual(started[0][0], ["node", "server.js", "--host", "127.0.0.1", "--port", "0"])
+        self.assertEqual(started[0][1]["env"]["CODEX_TERMINAL_HOST"], "127.0.0.1")
+        self.assertEqual(started[0][1]["env"]["CODEX_TERMINAL_PORT"], "0")
+        self.assertEqual(started[0][1]["env"]["CODEX_TERMINAL_SHELL"], "powershell.exe")
+        self.assertIn("EncodedCommand", started[0][1]["env"]["CODEX_TERMINAL_SHELL_ARGS"])
+
     def test_build_ttyd_command_uses_cwd_port_and_defaults_read_only(self):
         command = codex_launcher.build_ttyd_command(Path("E:/repo"), 7685)
 
@@ -432,6 +621,77 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertIn("live output line", event["transcript"])
         self.assertIn("live output line", event["session"]["transcript_preview"])
 
+    def test_reported_running_department_does_not_block_assignment_queue(self):
+        parent_session_id = "zhongshu-queue-slots"
+        codex_launcher.SESSIONS.extend(
+            [
+                {
+                    "id": parent_session_id,
+                    "session_kind": codex_launcher.SESSION_KIND_ZHONGSHU,
+                    "status": "running",
+                    "child_department_ids": ["menxia-reported", "gongchengbu-pending"],
+                },
+                {
+                    "id": "menxia-reported",
+                    "session_kind": codex_launcher.SESSION_KIND_DEPARTMENT,
+                    "department": "menxia",
+                    "title": "门下省",
+                    "status": "running",
+                    "report_status": "reported",
+                    "parent_session_id": parent_session_id,
+                },
+                {
+                    "id": "gongchengbu-pending",
+                    "session_kind": codex_launcher.SESSION_KIND_DEPARTMENT,
+                    "department": "gongchengbu",
+                    "title": "工程部",
+                    "status": "running",
+                    "report_status": "pending",
+                    "parent_session_id": parent_session_id,
+                },
+            ]
+        )
+        queued = [
+            codex_launcher.normalize_assignment(
+                {"department": "gongchengbu", "task": "修复 launcher 队列。"},
+                default_parent_session_id=parent_session_id,
+            ),
+            codex_launcher.normalize_assignment(
+                {"department": "menxia", "task": "复核 launcher 队列。"},
+                default_parent_session_id=parent_session_id,
+            ),
+        ]
+        codex_launcher.ASSIGNMENT_QUEUE.extend(queued)
+        original_start = codex_launcher.start_department_session
+        started = []
+
+        def fake_start(department, task, parent, model=None):
+            session_id = f"{department}-started"
+            session = {
+                "id": session_id,
+                "session_kind": codex_launcher.SESSION_KIND_DEPARTMENT,
+                "department": department,
+                "title": codex_launcher.DEPARTMENT_PROMPTS[department][0],
+                "status": "running",
+                "report_status": "pending",
+                "parent_session_id": parent,
+                "model": model,
+            }
+            codex_launcher.SESSIONS.insert(0, session)
+            started.append(session)
+            return {"ok": True, "session": session}
+
+        try:
+            codex_launcher.start_department_session = fake_start
+            result = codex_launcher.pump_assignment_queue()
+        finally:
+            codex_launcher.start_department_session = original_start
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(started[0]["department"], "gongchengbu")
+        self.assertEqual(codex_launcher.active_department_count(), codex_launcher.MAX_CODEX_TERMINALS)
+        self.assertEqual(len(codex_launcher.ASSIGNMENT_QUEUE), 1)
+
     def test_codex_runner_uses_terminal_stdout_with_transcript_log(self):
         script = codex_launcher.build_codex_runner_script(
             "Codex 中书省 [gpt-5.5]",
@@ -446,7 +706,7 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertIn("run_codex_prompt.py", script)
         self.assertNotIn("stdout=subprocess.PIPE", Path(codex_launcher.RUNNER).read_text(encoding="utf-8"))
 
-    def test_start_codex_terminal_attaches_ttyd_url_when_available(self):
+    def test_start_codex_terminal_uses_browser_terminal_and_attaches_ttyd_url(self):
         started_commands = []
         original_popen = codex_launcher.subprocess.Popen
         original_probe = codex_launcher.probe_ttyd
@@ -454,52 +714,81 @@ class ZhongshuPlanTests(unittest.TestCase):
         original_enabled = codex_launcher.TTYD_ENABLED
         original_port = codex_launcher.TTYD_PORT
         original_base_url = codex_launcher.TTYD_BASE_URL
+        original_terminal_dir = codex_launcher.CODEX_TERMINAL_DIR
 
         class FakeProcess:
-            def __init__(self, pid):
+            def __init__(self, pid, stdout=None):
                 self.pid = pid
+                self.stdout = stdout
 
             def poll(self):
                 return None
 
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
         def fake_popen(command, **kwargs):
             started_commands.append(command)
-            return FakeProcess(9876 if len(started_commands) == 1 else 7654)
+            if command[0] == "node":
+                return FakeProcess(
+                    9876,
+                    iter(
+                        [
+                            "[codex-terminal] shell=powershell.exe\n",
+                            "[codex-terminal] cwd=E:\\repo\n",
+                            "[codex-terminal] url=http://127.0.0.1:54321/?token=codex\n",
+                        ]
+                    ),
+                )
+            return FakeProcess(7654)
 
-        try:
-            codex_launcher.subprocess.Popen = fake_popen
-            codex_launcher.probe_ttyd = lambda force=False: {
-                "enabled": True,
-                "available": True,
-                "port": 7681,
-                "base_url": "http://127.0.0.1:7681",
-                "command": "ttyd",
-            }
-            codex_launcher.TTYD_AVAILABLE = True
-            codex_launcher.TTYD_ENABLED = True
-            codex_launcher.TTYD_PORT = 7681
-            codex_launcher.TTYD_BASE_URL = "http://127.0.0.1:7681"
+        with tempfile.TemporaryDirectory() as tmp:
+            terminal_dir = Path(tmp)
+            (terminal_dir / "node_modules").mkdir()
+            try:
+                codex_launcher.subprocess.Popen = fake_popen
+                codex_launcher.probe_ttyd = lambda force=False: {
+                    "enabled": True,
+                    "available": True,
+                    "port": 7681,
+                    "base_url": "http://127.0.0.1:7681",
+                    "command": "ttyd",
+                }
+                codex_launcher.CODEX_TERMINAL_DIR = terminal_dir
+                codex_launcher.TTYD_AVAILABLE = True
+                codex_launcher.TTYD_ENABLED = True
+                codex_launcher.TTYD_PORT = 7681
+                codex_launcher.TTYD_BASE_URL = "http://127.0.0.1:7681"
 
-            result = codex_launcher.start_codex_terminal(
-                "测试 ttyd",
-                "gongchengbu",
-                "工程部",
-                "gpt-5.4",
-                session_kind=codex_launcher.SESSION_KIND_DEPARTMENT,
-            )
-        finally:
-            codex_launcher.subprocess.Popen = original_popen
-            codex_launcher.probe_ttyd = original_probe
-            codex_launcher.TTYD_AVAILABLE = original_available
-            codex_launcher.TTYD_ENABLED = original_enabled
-            codex_launcher.TTYD_PORT = original_port
-            codex_launcher.TTYD_BASE_URL = original_base_url
-            codex_launcher.SESSIONS.clear()
-            codex_launcher.ACTIVE_PROCESSES.clear()
+                result = codex_launcher.start_codex_terminal(
+                    "测试 ttyd",
+                    "gongchengbu",
+                    "工程部",
+                    "gpt-5.4",
+                    session_kind=codex_launcher.SESSION_KIND_DEPARTMENT,
+                )
+            finally:
+                codex_launcher.subprocess.Popen = original_popen
+                codex_launcher.probe_ttyd = original_probe
+                codex_launcher.CODEX_TERMINAL_DIR = original_terminal_dir
+                codex_launcher.TTYD_AVAILABLE = original_available
+                codex_launcher.TTYD_ENABLED = original_enabled
+                codex_launcher.TTYD_PORT = original_port
+                codex_launcher.TTYD_BASE_URL = original_base_url
+                codex_launcher.SESSIONS.clear()
+                codex_launcher.ACTIVE_PROCESSES.clear()
+                codex_launcher.BROWSER_TERMINALS.clear()
 
         self.assertTrue(result["ok"])
+        self.assertEqual(result["browser_terminal"]["kind"], "codex_session")
+        self.assertEqual(result["browser_terminal"]["scope"], "session")
+        self.assertEqual(result["browser_terminal"]["url"], "http://127.0.0.1:54321/?token=codex")
         self.assertEqual(result["session"]["ttyd_url"], "http://127.0.0.1:7681/")
         self.assertEqual(len(started_commands), 2)
+        self.assertEqual(started_commands[0], ["node", "server.js", "--host", "127.0.0.1", "--port", "0"])
         self.assertEqual(started_commands[1][:5], ["ttyd", "-p", "7681", "-w", str(codex_launcher.REPO_ROOT)])
 
     def test_dashboard_history_uses_scrollable_session_history(self):
@@ -517,6 +806,13 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertNotIn("EventSource", dashboard)
         self.assertNotIn("/api/session_stream", dashboard)
         self.assertNotIn("open-session-ttyd", dashboard)
+
+    def test_dashboard_exposes_session_browser_preview_controls(self):
+        dashboard = (Path(__file__).resolve().parent / "dashboard.html").read_text(encoding="utf-8")
+
+        self.assertIn("data-open-session-preview", dashboard)
+        self.assertIn("/api/session_browser_terminal/start", dashboard)
+        self.assertIn("selectedBrowserTerminalId", dashboard)
 
     def test_exited_department_without_report_gets_launcher_fallback(self):
         parent_session_id = "zhongshu-missing-report"

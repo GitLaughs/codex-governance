@@ -45,6 +45,17 @@ Returns unread and read department reports for a Zhongshu session. By default, u
 
 Returns a restart snapshot for a Zhongshu session: task, plan, recent reports, and child sessions.
 
+## GET `/api/browser_terminals`
+
+Returns browser terminal sidecars launched through `tools/codex_terminal/`.
+
+Session payloads returned by `/api/status`, `/api/sessions`, `/api/zhongshu_sessions`, and inbox/context endpoints may also include:
+
+- `browser_terminal_id`
+- `browser_terminal_status`
+- `browser_terminal_url`
+- `browser_terminal_title`
+
 ## POST `/api/start_zhongshu_session`
 
 Starts a Zhongshu Codex session.
@@ -83,6 +94,35 @@ Assignment fields:
 - `reason`
 - `model_reason`
 - `selected`
+
+## POST `/api/browser_terminal/start`
+
+Starts the local `tools/codex_terminal/` sidecar and returns a tokenized loopback URL for iframe embedding.
+
+Optional request fields:
+
+- `shell`: override PTY shell
+- `shell_args`: override PTY shell arguments
+
+The launcher always sets host to `127.0.0.1` and port to `0`, so the terminal service chooses a free loopback port and generates its own runtime token.
+
+## POST `/api/browser_terminal/close`
+
+Stops a browser terminal sidecar.
+
+Request fields:
+
+- `id`: terminal id returned by `/api/browser_terminal/start`
+
+## POST `/api/session_browser_terminal/start`
+
+Starts or reuses a tokenized loopback browser-terminal sidecar for one governance session.
+
+Request fields:
+
+- `session_id`
+
+The sidecar stays on `127.0.0.1` and tails that session's transcript log for browser preview inside the dashboard.
 
 ## POST `/api/start_assignments`
 
