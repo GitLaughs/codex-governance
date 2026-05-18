@@ -34,6 +34,7 @@ REPO_ROOT = default_repo_root()
 PROMPT_DIR = REPO_ROOT / ".tmp" / "codex_governance_prompts"
 MAILBOX_ROOT = REPO_ROOT / ".tmp" / "codex_governance_mailbox"
 SESSION_LOG_DIR = REPO_ROOT / ".tmp" / "codex_governance_logs"
+AUDIT_LOG_PATH = REPO_ROOT / ".tmp" / "codex_governance_audit.jsonl"
 RUNNER = SCRIPT_DIR / "run_codex_prompt.py"
 CODEX_TERMINAL_DIR = REPO_ROOT / "tools" / "codex_terminal"
 MAX_CODEX_TERMINALS = int(os.environ.get("CODEX_GOVERNANCE_MAX_DEPARTMENTS", "2"))
@@ -52,14 +53,17 @@ MODEL_CHOICES = tuple(
 ) or ("gpt-5.5", "gpt-5.4")
 ZHONGSHU_MODEL = os.environ.get("CODEX_GOVERNANCE_ZHONGSHU_MODEL", MODEL_CHOICES[0])
 DEPARTMENT_MODEL = os.environ.get("CODEX_GOVERNANCE_DEPARTMENT_MODEL", MODEL_CHOICES[-1])
+INBOX_SUBAGENT_MODEL = os.environ.get("CODEX_GOVERNANCE_INBOX_SUBAGENT_MODEL", DEPARTMENT_MODEL)
 SESSION_KIND_ZHONGSHU = "zhongshu"
 SESSION_KIND_DEPARTMENT = "department"
+SESSION_KIND_INBOX_MONITOR = "inbox_monitor"
 LAUNCHER_BASE_URL = os.environ.get("CODEX_GOVERNANCE_LAUNCHER_URL", "http://127.0.0.1:6211")
 PROJECT_NAME = os.environ.get("CODEX_GOVERNANCE_PROJECT_NAME", REPO_ROOT.name)
 WORKFLOW_DOC = os.environ.get("CODEX_GOVERNANCE_WORKFLOW_DOC", "AGENTS.md")
 ALLOW_ORIGIN = os.environ.get("CODEX_GOVERNANCE_ALLOW_ORIGIN", "*")
 DEPARTMENT_OBSERVATION_WAIT_MINUTES = int(os.environ.get("CODEX_GOVERNANCE_DEPARTMENT_OBSERVATION_WAIT_MINUTES", "10"))
 DEPARTMENT_OBSERVATION_CHECK_SECONDS = int(os.environ.get("CODEX_GOVERNANCE_DEPARTMENT_OBSERVATION_CHECK_SECONDS", "90"))
+DEPARTMENT_STALE_SECONDS = int(os.environ.get("CODEX_GOVERNANCE_DEPARTMENT_STALE_SECONDS", "300"))
 TTYD_ENABLED = os.environ.get("CODEX_GOVERNANCE_TTYD_ENABLED", "0").strip().lower() not in {"0", "false", "no", "off"}
 TTYD_COMMAND = os.environ.get("CODEX_GOVERNANCE_TTYD_COMMAND", "ttyd").strip() or "ttyd"
 TTYD_HOST = os.environ.get("CODEX_GOVERNANCE_TTYD_HOST", "127.0.0.1").strip() or "127.0.0.1"
@@ -77,8 +81,8 @@ DEPARTMENT_PROMPTS = {
 }
 
 DEPARTMENT_REPORT_POLICY = (
-    "mailbox 回传即视为部门本轮结束；写完 mailbox 后必须立即停止本部门会话，不要继续观察或追加工作。"
-    "中书省收到回传后只读 inbox 摘要、风险和 next_action，无需继续观察该部门终端。"
+    "mailbox 回传即视为部门本轮结束；写完 mailbox 后必须立即停止本部门会话。"
+    "中书省只读 inbox，无需继续观察该部门终端。"
 )
 
 EFFICIENT_EXECUTION_POLICY = (
@@ -86,9 +90,16 @@ EFFICIENT_EXECUTION_POLICY = (
     "遇明确失败、破坏性操作、越权文件或高风险合约问题才暂停上报。"
 )
 
+INBOX_SUBAGENT_POLICY = (
+    f"收件监听交给 inbox monitor({INBOX_SUBAGENT_MODEL})：从启动起只读轮询 inbox，"
+    "它收到 mailbox 后汇总给中书省；中书省不再先监听再转交 subagent。"
+    "monitor 不改文件、不启动部门、不替中书省最终决策"
+)
+
 ZHONGSHU_CONTINUATION_POLICY = (
-    "续派：只在回传明确给出 next_action、风险或缺口时再派；否则汇总交付。"
-    "并发未满且任务可并行时才派 1-2 个部门；中书省只做范围判断和最终汇总。"
+    "续派：有 next_action/风险/缺口才派，否则汇总。"
+    "并发未满且可并行才派 1-2 部门；中书省只做范围和最终汇总。"
+    f"{INBOX_SUBAGENT_POLICY}"
     f"{DEPARTMENT_REPORT_POLICY}"
 )
 
@@ -434,6 +445,17 @@ def now_text() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def audit_event(event: str, **fields: object) -> None:
+    AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "ts": now_text(),
+        "event": event,
+        **fields,
+    }
+    with AUDIT_LOG_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
 def new_session_id(prefix: str) -> str:
     return f"{prefix}-{time.time_ns()}"
 
@@ -457,6 +479,36 @@ def session_public(session: dict, *, include_preview: bool = True) -> dict:
         else:
             public["transcript_preview"] = ""
     return public
+
+
+def update_department_heartbeat(session: dict) -> None:
+    if session.get("session_kind") != SESSION_KIND_DEPARTMENT:
+        return
+    if session.get("status") != "running":
+        session["heartbeat_status"] = "exited"
+        return
+    log_path = Path(str(session.get("log_path", "")))
+    try:
+        stat = log_path.stat()
+    except OSError:
+        session["heartbeat_status"] = "unknown"
+        session.setdefault("last_activity_at", session.get("started_at"))
+        return
+
+    current = (stat.st_size, stat.st_mtime)
+    previous = session.get("_heartbeat_log_state")
+    if previous != current:
+        session["_heartbeat_log_state"] = current
+        session["_last_activity_ts"] = time.time()
+        session["last_activity_at"] = now_text()
+        session["last_activity_bytes"] = stat.st_size
+        session["heartbeat_status"] = "active"
+        return
+
+    last_activity_ts = float(session.get("_last_activity_ts") or stat.st_mtime)
+    idle_seconds = max(0, int(time.time() - last_activity_ts))
+    session["idle_seconds"] = idle_seconds
+    session["heartbeat_status"] = "stalled" if idle_seconds >= DEPARTMENT_STALE_SECONDS else "active"
 
 
 def zhongshu_context_snapshot(session_id: str) -> dict:
@@ -587,10 +639,12 @@ def refresh_sessions() -> None:
     for session in SESSIONS:
         process = session.get("_process")
         if process is None:
+            update_department_heartbeat(session)
             continue
         running = process.poll() is None
         session["status"] = "running" if running else "exited"
         session["ended_at"] = None if running else session.get("ended_at") or now_text()
+        update_department_heartbeat(session)
         ttyd_process = session.get("_ttyd_process")
         if ttyd_process is None:
             continue
@@ -628,6 +682,13 @@ def department_occupies_slot(session: dict) -> bool:
         session.get("session_kind") == SESSION_KIND_DEPARTMENT
         and session.get("status") == "running"
         and session.get("report_status") != "reported"
+    )
+
+
+def session_terminal_occupies_slot(session: dict) -> bool:
+    return (
+        session.get("session_kind") in {SESSION_KIND_DEPARTMENT, SESSION_KIND_INBOX_MONITOR}
+        and session.get("status") == "running"
     )
 
 
@@ -669,10 +730,18 @@ def close_session_process(session_id: str) -> bool:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+    browser_terminal_id = str(session.get("browser_terminal_id", "")).strip()
+    if browser_terminal_id and browser_terminal_id in BROWSER_TERMINALS:
+        item = BROWSER_TERMINALS[browser_terminal_id]
+        item["status"] = "exited"
+        item["ended_at"] = item.get("ended_at") or now_text()
+        sync_session_browser_terminal(item)
     session["status"] = "exited"
     session["ended_at"] = now_text()
+    session["heartbeat_status"] = "exited"
     if session.get("ttyd_status") == "running":
         session["ttyd_status"] = "exited"
+    audit_event("session_closed", session_id=session_id, session_kind=session.get("session_kind"))
     return True
 
 
@@ -734,7 +803,7 @@ def build_zhongshu_result_prompt(parent_session_id: str, result: dict) -> str:
     risks = result.get("risks", [])
     risk_text = "；".join(clipped_text(item, 160) for item in risks[:3]) or "无新增风险"
     suffix = (
-        f"建议下一步：{next_action}。"
+        f"下一步：{next_action}。"
         if next_action
         else "若三部和门下省都已完成且无需续派，请直接汇总当前结果给用户。"
     )
@@ -743,55 +812,94 @@ def build_zhongshu_result_prompt(parent_session_id: str, result: dict) -> str:
         f"{ZHONGSHU_CONTINUATION_POLICY}"
         f"部门：{result.get('department', 'unknown')}。摘要：{summary}。"
         f"风险：{risk_text}。"
-        f"状态：完成 {len(completed)}，运行 {len(running)}，排队 {len(queued)}。"
-        f"读完整结果：{LAUNCHER_BASE_URL}/api/zhongshu_inbox?id={parent_session_id}&peek=1；按 next_action 判断续派或汇总。"
+        f"状态：完{len(completed)}/跑{len(running)}/排{len(queued)}。"
+        f"读完整结果：{LAUNCHER_BASE_URL}/api/zhongshu_inbox?id={parent_session_id}&peek=1；按 next_action 续派或汇总。"
         f"{suffix}"
     )
 
 
-def auto_notify_zhongshu(parent_session_id: str, result: dict) -> dict:
+def build_inbox_monitor_prompt(parent_session_id: str, launcher_url: str) -> str:
+    return (
+        f"你是 {PROJECT_NAME} 的 inbox monitor。上级中书省 session_id={parent_session_id}。"
+        f"职责：从现在开始监听 mailbox/inbox，不改文件、不启动部门、不替中书省最终决策。"
+        f"每隔 {DEPARTMENT_OBSERVATION_CHECK_SECONDS} 秒读取 {launcher_url}/api/zhongshu_inbox?id={parent_session_id}&peek=1。"
+        "发现 unread_results 时，按部门、风险、next_action、launcher_fallback 汇总。"
+        f"把汇总发送给中书省：POST {launcher_url}/api/notify_zhongshu "
+        "body={parent_session_id, summary, risk_count, next_action}。"
+        "发送成功后继续监听；没有新 unread_results 时安静等待。"
+    )
+
+
+def build_zhongshu_monitor_summary_prompt(parent_session_id: str, summary: str, risk_count: int, next_action: str) -> str:
+    suffix = (
+        f"建议下一步：{clipped_text(next_action, 260)}。"
+        if next_action
+        else "若三部和门下省都已完成且无需续派，请直接汇总当前结果给用户。"
+    )
+    return (
+        f"inbox monitor 汇总了部门 mailbox 回传。"
+        f"{ZHONGSHU_CONTINUATION_POLICY}"
+        f"风险数：{risk_count}。摘要：{clipped_text(summary, 520)}。"
+        f"完整 inbox：{LAUNCHER_BASE_URL}/api/zhongshu_inbox?id={parent_session_id}&peek=1。"
+        f"{suffix}"
+    )
+
+
+def start_inbox_monitor(parent_session_id: str) -> dict:
+    parent = require_zhongshu_session(parent_session_id, active_only=False)
+    monitor_id = str(parent.get("inbox_monitor_session_id", "")).strip()
+    if monitor_id:
+        monitor = get_session(monitor_id, SESSION_KIND_INBOX_MONITOR)
+        if monitor is not None and monitor.get("status") == "running":
+            return {"ok": True, "status": "running", "session": session_public(monitor)}
+
+    prompt = build_inbox_monitor_prompt(parent_session_id, LAUNCHER_BASE_URL)
+    result = start_codex_terminal(
+        prompt,
+        "inbox_monitor",
+        "收件监听",
+        INBOX_SUBAGENT_MODEL,
+        session_kind=SESSION_KIND_INBOX_MONITOR,
+        parent_session_id=parent_session_id,
+        session_id=new_session_id("inbox-monitor"),
+    )
+    parent["inbox_monitor_session_id"] = result["session"]["id"]
+    parent["inbox_monitor_status"] = "running"
+    payload = {"ok": True, "status": "started", "session": result["session"]}
+    if result.get("browser_terminal"):
+        payload["browser_terminal"] = result["browser_terminal"]
+    return payload
+
+
+def notify_zhongshu_from_monitor(parent_session_id: str, payload: dict) -> dict:
     session = require_zhongshu_session(parent_session_id, active_only=False)
+    summary = normalize_task_text(str(payload.get("summary", "")).strip()) or "inbox monitor 收到部门回传。"
+    risk_count = int(payload.get("risk_count", 0) or 0)
+    next_action = normalize_task_text(str(payload.get("next_action", "")).strip())
+    prompt = build_zhongshu_monitor_summary_prompt(parent_session_id, summary, risk_count, next_action)
     if session.get("status") != "running":
-        message = "zhongshu session is not running"
-        session["auto_notification_status"] = "skipped"
-        session["auto_notification_error"] = message
-        session["auto_notification_at"] = now_text()
-        return {"ok": False, "status": "skipped", "error": message}
-    prompt = build_zhongshu_result_prompt(parent_session_id, result)
+        return {"ok": False, "status": "skipped", "error": "zhongshu session is not running", "prompt": prompt}
     ok, error = send_prompt_to_window(str(session.get("window_title", "")), prompt, session.get("pid"))
-    session["auto_notification_status"] = "sent" if ok else "error"
-    session["auto_notification_error"] = error if not ok else ""
-    session["auto_notification_at"] = now_text()
-    session["last_auto_notification_prompt"] = prompt
-    if ok:
-        return {"ok": True, "status": "sent", "error": "", "prompt": prompt}
+    session["last_monitor_notification_prompt"] = prompt
+    session["last_monitor_notification_status"] = "sent" if ok else "error"
+    session["last_monitor_notification_error"] = "" if ok else error
+    session["last_monitor_notification_at"] = now_text()
+    return {"ok": ok, "status": "sent" if ok else "error", "error": "" if ok else error, "prompt": prompt}
 
+
+def auto_notify_zhongshu(parent_session_id: str, result: dict) -> dict:
     try:
-        fallback = start_codex_terminal(
-            prompt,
-            "zhongshu_notify",
-            "中书省通知",
-            str(session.get("model", ZHONGSHU_MODEL)),
-            session_kind=SESSION_KIND_ZHONGSHU,
-        )
+        monitor = start_inbox_monitor(parent_session_id)
     except (OSError, ValueError) as exc:
+        session = require_zhongshu_session(parent_session_id, active_only=False)
         session["auto_notification_status"] = "error"
-        session["auto_notification_fallback_error"] = str(exc)
-        return {"ok": False, "status": "error", "error": error, "fallback_error": str(exc), "prompt": prompt}
-
-    fallback_session = get_session(fallback["session"]["id"], SESSION_KIND_ZHONGSHU)
-    if fallback_session is not None:
-        fallback_session["notification_for_session_id"] = parent_session_id
-        fallback_session["notification_for_report_id"] = result.get("id")
-    session["auto_notification_status"] = "fallback_started"
-    session["auto_notification_fallback_session_id"] = fallback["session"]["id"]
-    return {
-        "ok": True,
-        "status": "fallback_started",
-        "error": error,
-        "fallback_session": session_public(fallback["session"]),
-        "prompt": prompt,
-    }
+        session["auto_notification_error"] = str(exc)
+        return {"ok": False, "status": "error", "error": str(exc)}
+    session = require_zhongshu_session(parent_session_id, active_only=False)
+    session["auto_notification_status"] = f"monitor_{monitor['status']}"
+    session["auto_notification_monitor_session_id"] = monitor["session"]["id"]
+    session["auto_notification_at"] = now_text()
+    return {"ok": True, "status": monitor["status"], "monitor_session": monitor["session"]}
 
 
 def require_zhongshu_session(session_id: str, active_only: bool = False) -> dict:
@@ -908,6 +1016,14 @@ def register_zhongshu_plan(parent_session_id: str, payload: dict, *, source: str
     session["plan_status"] = "ready"
     session["plan_reported_at"] = plan["reported_at"]
     session["plan_auto_dispatch"] = auto_dispatch
+    audit_event(
+        "zhongshu_plan_registered",
+        session_id=parent_session_id,
+        source=source,
+        assignment_count=len(normalized_assignments),
+        auto_started=len(auto_dispatch.get("started", [])),
+        auto_queued=auto_dispatch.get("queued_count", 0),
+    )
     return plan
 
 
@@ -982,6 +1098,12 @@ def register_result(
         existing["source"] = source
         if mailbox_file:
             existing["mailbox_file"] = mailbox_file
+        audit_event(
+            "result_updated",
+            parent_session_id=parent_session_id,
+            report_id=result_id,
+            source=source,
+        )
         return existing
 
     result = {
@@ -1005,6 +1127,15 @@ def register_result(
         result["mailbox_file"] = mailbox_file
     reports.insert(0, result)
     result["handoff_packet"] = str(write_handoff_packet(parent_session_id, result))
+    audit_event(
+        "result_registered",
+        parent_session_id=parent_session_id,
+        report_id=result_id,
+        department=result["department"],
+        source=source,
+        needs_user_confirmation=result["needs_user_confirmation"],
+        risk_count=len(result["risks"]),
+    )
     if mark_unread:
         parent["unread_result_count"] = parent.get("unread_result_count", 0) + 1
 
@@ -1208,9 +1339,21 @@ def send_session_input(session_id: str, text: str) -> dict:
         raise ValueError("input is required")
     if session.get("status") != "running":
         raise ValueError(f"session is not running: {session_id}")
-    ok, error = send_prompt_to_window(str(session.get("window_title", "")), normalized, session.get("pid"))
+    prompt = normalized
+    if session.get("session_kind") == SESSION_KIND_ZHONGSHU:
+        try:
+            start_inbox_monitor(session_id)
+        except (OSError, ValueError) as exc:
+            session["inbox_monitor_error"] = str(exc)
+        prompt = (
+            f"{normalized}。"
+            f"如需再次派发三省三部，直接 POST {LAUNCHER_BASE_URL}/api/report_zhongshu_plan "
+            f"body={{session_id:'{session_id}', summary, assignments}}；"
+            "launcher 会自动启动或排队部门终端。"
+        )
+    ok, error = send_prompt_to_window(str(session.get("window_title", "")), prompt, session.get("pid"))
     history = session.setdefault("input_history", [])
-    history.append({"text": normalized, "sent_at": now_text(), "ok": ok, "error": error})
+    history.append({"text": normalized, "prompt": prompt, "sent_at": now_text(), "ok": ok, "error": error})
     if not ok:
         raise ValueError(error or "failed to send input")
     return {"ok": True, "session_id": session_id, "sent_at": history[-1]["sent_at"]}
@@ -1306,6 +1449,8 @@ def start_codex_terminal(
         "status": "running",
         "started_at": now_text(),
         "ended_at": None,
+        "heartbeat_status": "active" if session_kind == SESSION_KIND_DEPARTMENT else "n/a",
+        "last_activity_at": now_text(),
         "_process": process,
     }
     session["browser_terminal_id"] = terminal.get("id")
@@ -1349,6 +1494,14 @@ def start_codex_terminal(
         child_ids = parent.setdefault("child_department_ids", [])
         if resolved_session_id not in child_ids:
             child_ids.append(resolved_session_id)
+    audit_event(
+        "session_started",
+        session_id=resolved_session_id,
+        session_kind=session_kind,
+        department=prefix,
+        parent_session_id=parent_session_id,
+        model=selected_model,
+    )
     return {
         "ok": True,
         "prompt_path": str(prompt_path),
@@ -1386,6 +1539,10 @@ def start_zhongshu_session(task: str, model: str | None = None) -> dict:
     session = get_session(session_id, SESSION_KIND_ZHONGSHU)
     if session is not None:
         session["task"] = task
+    try:
+        result["inbox_monitor"] = start_inbox_monitor(session_id)
+    except (OSError, ValueError) as exc:
+        result["inbox_monitor"] = {"ok": False, "status": "error", "error": str(exc)}
     return result
 
 
@@ -1722,6 +1879,13 @@ def zhongshu_sessions_payload() -> dict:
 def queue_assignments(assignments: list[dict]) -> dict:
     with STATE_LOCK:
         ASSIGNMENT_QUEUE.extend(assignments)
+        for assignment in assignments:
+            audit_event(
+                "assignment_queued",
+                parent_session_id=assignment.get("parent_session_id"),
+                department=assignment.get("department"),
+                model=assignment.get("model"),
+            )
         started = pump_assignment_queue()
         queued = queue_snapshot()
         active = active_department_count()
@@ -1930,6 +2094,14 @@ class LauncherHandler(BaseHTTPRequestHandler):
                 plan_payload.setdefault("reported_at", now_text())
                 plan = register_zhongshu_plan(parent_session_id, plan_payload, source="http")
                 self.send_json({"ok": True, "session_id": parent_session_id, "plan": plan_public(plan)})
+                return
+
+            if parsed.path == "/api/notify_zhongshu":
+                parent_session_id = resolve_parent_session_id(
+                    str(payload.get("parent_session_id", payload.get("session_id", payload.get("zhongshu_session_id", "")))).strip(),
+                    active_only=False,
+                )
+                self.send_json(notify_zhongshu_from_monitor(parent_session_id, payload))
                 return
         except (OSError, ValueError) as exc:
             self.send_json({"ok": False, "error": str(exc)}, 400)

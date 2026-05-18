@@ -55,6 +55,8 @@ Session payloads returned by `/api/status`, `/api/sessions`, `/api/zhongshu_sess
 - `browser_terminal_status`
 - `browser_terminal_url`
 - `browser_terminal_title`
+- `heartbeat_status`: department session liveness, one of `active`, `stalled`, `exited`, or `unknown`
+- `idle_seconds`: seconds since the department transcript log last changed, present after heartbeat sampling
 
 ## POST `/api/start_zhongshu_session`
 
@@ -175,6 +177,10 @@ When the launcher registers a department report, it also writes a Markdown hando
 ```
 
 The registered result includes `handoff_packet` with the generated path. The packet records the parent session, department session, source, objective, summary, changed files, verification, risks, and next action.
+
+Zhongshu prompts include an inbox reduction rule: when unread results are multiple, risky, need confirmation, conflict on `next_action`, or include `launcher_fallback`, Zhongshu should use a temporary Codex subagent to read `/api/zhongshu_inbox?id=<session_id>&peek=1` and summarize only. That subagent must not edit files, start departments, or make the final Zhongshu decision.
+
+Launcher also appends key flow events to `.tmp/codex_governance_audit.jsonl` as JSON Lines. Current event names include `session_started`, `session_closed`, `assignment_queued`, `zhongshu_plan_registered`, `result_registered`, and `result_updated`.
 
 ## Failure Shape
 

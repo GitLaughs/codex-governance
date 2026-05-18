@@ -81,6 +81,8 @@ start dashboard.html
 - 分派方案确认
 - 结果归档与 mailbox 兜底
 - 部门 handoff packet 生成
+- 中书省复杂 inbox 减负提示：多回传、风险、需确认、next_action 冲突或 launcher 兜底结果出现时，提示中书省临时使用 `gpt-5.4` Codex subagent 只读汇总 inbox
+- 轻量审计与心跳：launcher 将关键流转写入 `.tmp/codex_governance_audit.jsonl`，并在会话状态中暴露部门 `heartbeat_status` / `idle_seconds`
 
 默认并发限制：
 
@@ -139,6 +141,7 @@ start dashboard.html
 - mailbox：`.tmp/codex_governance_mailbox/<zhongshu_session_id>/incoming`
 - archive：`.tmp/codex_governance_mailbox/<zhongshu_session_id>/archive`
 - handoff packet：`.tmp/codex_governance_mailbox/<zhongshu_session_id>/archive/handoff-*.md`
+- 审计日志：`.tmp/codex_governance_audit.jsonl`
 
 ## 配置
 
@@ -151,7 +154,9 @@ launcher 支持这些环境变量：
 - `CODEX_GOVERNANCE_MODELS`：逗号分隔的模型候选
 - `CODEX_GOVERNANCE_ZHONGSHU_MODEL`：中书省默认模型
 - `CODEX_GOVERNANCE_DEPARTMENT_MODEL`：部门默认模型
+- `CODEX_GOVERNANCE_INBOX_SUBAGENT_MODEL`：中书省用于只读汇总复杂 inbox 的临时 Codex subagent 模型，默认同部门模型
 - `CODEX_GOVERNANCE_MAX_DEPARTMENTS`：部门并发上限
+- `CODEX_GOVERNANCE_DEPARTMENT_STALE_SECONDS`：部门日志无活动多久后标记为 `stalled`，默认 `300`
 - `CODEX_GOVERNANCE_ALLOW_ORIGIN`：本地 API 的 CORS `Access-Control-Allow-Origin`
 
 浏览器终端安全边界：

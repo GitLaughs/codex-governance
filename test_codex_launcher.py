@@ -1,4 +1,5 @@
 import unittest
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -9,11 +10,18 @@ import codex_launcher
 
 class ZhongshuPlanTests(unittest.TestCase):
     def setUp(self):
+        self._original_audit_log_path = codex_launcher.AUDIT_LOG_PATH
+        self._audit_tmp = tempfile.TemporaryDirectory()
+        codex_launcher.AUDIT_LOG_PATH = Path(self._audit_tmp.name) / "audit.jsonl"
         codex_launcher.SESSIONS.clear()
         codex_launcher.REPORTS_BY_ZHONGSHU.clear()
         codex_launcher.PLANS_BY_ZHONGSHU.clear()
         codex_launcher.BROWSER_TERMINALS.clear()
         codex_launcher.ASSIGNMENT_QUEUE.clear()
+
+    def tearDown(self):
+        codex_launcher.AUDIT_LOG_PATH = self._original_audit_log_path
+        self._audit_tmp.cleanup()
 
     def test_empty_plan_does_not_require_confirmation(self):
         session_id = "zhongshu-test-empty"
@@ -77,7 +85,7 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertEqual(plan["auto_dispatch"]["queued_count"], 1)
         self.assertEqual(queued[0]["parent_session_id"], session_id)
 
-    def test_auto_notify_starts_fallback_session_when_window_missing(self):
+    def test_auto_notify_ensures_inbox_monitor(self):
         parent_session_id = "zhongshu-test-notify"
         started = []
         codex_launcher.SESSIONS.append(
@@ -93,15 +101,11 @@ class ZhongshuPlanTests(unittest.TestCase):
             }
         )
 
-        original_send = codex_launcher.send_prompt_to_window
         original_start = codex_launcher.start_codex_terminal
-
-        def fake_send(window_title, prompt, process_id=None):
-            return False, "window not found"
 
         def fake_start(prompt, prefix, title, model, *, session_kind, parent_session_id=None, session_id=None):
             session = {
-                "id": "zhongshu-notify-test",
+                "id": session_id or "inbox-monitor-test",
                 "session_kind": session_kind,
                 "department": prefix,
                 "title": title,
@@ -113,7 +117,6 @@ class ZhongshuPlanTests(unittest.TestCase):
             return {"ok": True, "session": session}
 
         try:
-            codex_launcher.send_prompt_to_window = fake_send
             codex_launcher.start_codex_terminal = fake_start
             notification = codex_launcher.auto_notify_zhongshu(
                 parent_session_id,
@@ -125,15 +128,14 @@ class ZhongshuPlanTests(unittest.TestCase):
                 },
             )
         finally:
-            codex_launcher.send_prompt_to_window = original_send
             codex_launcher.start_codex_terminal = original_start
 
         self.assertTrue(notification["ok"])
-        self.assertEqual(notification["status"], "fallback_started")
-        self.assertEqual(notification["fallback_session"]["id"], "zhongshu-notify-test")
+        self.assertEqual(notification["status"], "started")
+        self.assertEqual(notification["monitor_session"]["session_kind"], codex_launcher.SESSION_KIND_INBOX_MONITOR)
         self.assertIn("/api/zhongshu_inbox?id=zhongshu-test-notify", started[0])
         parent = codex_launcher.get_session(parent_session_id, codex_launcher.SESSION_KIND_ZHONGSHU)
-        self.assertEqual(parent["auto_notification_status"], "fallback_started")
+        self.assertEqual(parent["auto_notification_status"], "monitor_started")
 
     def test_result_notification_prompt_is_concise(self):
         codex_launcher.SESSIONS.append(
@@ -228,7 +230,8 @@ class ZhongshuPlanTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["browser_terminal"]["id"], "browser-terminal-test")
-        self.assertEqual(browser_started, [True])
+        self.assertEqual(browser_started, [True, True])
+        self.assertEqual(result["inbox_monitor"]["session"]["session_kind"], codex_launcher.SESSION_KIND_INBOX_MONITOR)
 
     def test_department_prompt_uses_mailbox_only_report(self):
         parent_session_id = "zhongshu-test-report"
@@ -275,9 +278,90 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertNotIn("观察窗", department_prompt)
         self.assertIn("跑最相关验证", department_prompt)
 
+    def test_zhongshu_prompts_use_inbox_monitor(self):
+        start_prompt = codex_launcher.build_zhongshu_prompt(
+            "并行处理多个部门回传。",
+            "http://127.0.0.1:6211",
+            "zhongshu-inbox-subagent",
+        )
+        result_prompt = codex_launcher.build_zhongshu_result_prompt(
+            "zhongshu-inbox-subagent",
+            {
+                "department": "gongchengbu",
+                "summary": "工程部完成，等待汇总。",
+                "risks": ["文档和测试结论不一致。"],
+                "next_action": "中书省汇总前先读 inbox。",
+            },
+        )
+
+        for prompt in (start_prompt, result_prompt):
+            self.assertIn("inbox monitor", prompt)
+            self.assertIn("gpt-5.4", prompt)
+            self.assertIn("只读轮询 inbox", prompt)
+            self.assertIn("不改文件、不启动部门、不替中书省最终决策", prompt)
+
     def test_department_observation_interval_defaults_to_ninety_seconds(self):
         self.assertEqual(codex_launcher.DEPARTMENT_OBSERVATION_WAIT_MINUTES, 10)
         self.assertEqual(codex_launcher.DEPARTMENT_OBSERVATION_CHECK_SECONDS, 90)
+
+    def test_running_department_exposes_stalled_heartbeat(self):
+        log_path = codex_launcher.AUDIT_LOG_PATH.parent / "department.log"
+        log_path.write_text("started\n", encoding="utf-8")
+        codex_launcher.SESSIONS.append(
+            {
+                "id": "gongchengbu-stalled",
+                "session_kind": codex_launcher.SESSION_KIND_DEPARTMENT,
+                "department": "gongchengbu",
+                "title": "工程部",
+                "status": "running",
+                "started_at": "2026-05-19 00:00:00",
+                "log_path": str(log_path),
+                "_heartbeat_log_state": (log_path.stat().st_size, log_path.stat().st_mtime),
+                "_last_activity_ts": 1.0,
+            }
+        )
+
+        snapshot = codex_launcher.session_snapshot()
+
+        self.assertEqual(snapshot[0]["heartbeat_status"], "stalled")
+        self.assertGreaterEqual(snapshot[0]["idle_seconds"], codex_launcher.DEPARTMENT_STALE_SECONDS)
+
+    def test_register_result_writes_audit_jsonl(self):
+        parent_session_id = "zhongshu-audit"
+        codex_launcher.SESSIONS.append(
+            {
+                "id": parent_session_id,
+                "session_kind": codex_launcher.SESSION_KIND_ZHONGSHU,
+                "department": "zhongshu",
+                "title": "中书省",
+                "status": "running",
+                "unread_result_count": 0,
+                "child_department_ids": [],
+            }
+        )
+        original_notify = codex_launcher.auto_notify_zhongshu
+        try:
+            codex_launcher.auto_notify_zhongshu = lambda parent, result: {"ok": True, "status": "skipped"}
+            codex_launcher.register_result(
+                parent_session_id,
+                {
+                    "department_session_id": "gongchengbu-audit",
+                    "department": "gongchengbu",
+                    "summary": "完成。",
+                    "risks": ["需复核。"],
+                },
+                source="mailbox",
+            )
+        finally:
+            codex_launcher.auto_notify_zhongshu = original_notify
+
+        events = [
+            json.loads(line)
+            for line in codex_launcher.AUDIT_LOG_PATH.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(events[-1]["event"], "result_registered")
+        self.assertEqual(events[-1]["parent_session_id"], parent_session_id)
+        self.assertEqual(events[-1]["risk_count"], 1)
 
     def test_department_report_auto_closes_running_session(self):
         parent_session_id = "zhongshu-preserve-child"
@@ -298,9 +382,15 @@ class ZhongshuPlanTests(unittest.TestCase):
                     "status": "running",
                     "report_status": "pending",
                     "parent_session_id": parent_session_id,
+                    "browser_terminal_id": "browser-child",
                 },
             ]
         )
+        codex_launcher.BROWSER_TERMINALS["browser-child"] = {
+            "id": "browser-child",
+            "status": "running",
+            "session_id": department_session_id,
+        }
         original_notify = codex_launcher.auto_notify_zhongshu
         codex_launcher.auto_notify_zhongshu = lambda parent, result: {"ok": True, "status": "test"}
         try:
@@ -322,6 +412,7 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertEqual(child["status"], "exited")
         self.assertTrue(child["auto_closed"])
         self.assertEqual(child["auto_close_reason"], "mailbox_report_received")
+        self.assertEqual(codex_launcher.BROWSER_TERMINALS["browser-child"]["status"], "exited")
 
     def test_restart_running_zhongshu_sends_prompt_to_original_session(self):
         session_id = "zhongshu-running"
@@ -566,9 +657,13 @@ class ZhongshuPlanTests(unittest.TestCase):
             codex_launcher.send_prompt_to_window = original_send
 
         self.assertTrue(result["ok"])
-        self.assertEqual(sent, [("Codex 中书省 [gpt-5.5]", "继续执行", 456)])
+        self.assertEqual(sent[0][0], "Codex 中书省 [gpt-5.5]")
+        self.assertIn("继续执行", sent[0][1])
+        self.assertIn("/api/report_zhongshu_plan", sent[0][1])
+        self.assertEqual(sent[0][2], 456)
         session = codex_launcher.get_session(session_id)
         self.assertEqual(session["input_history"][-1]["text"], "继续执行")
+        self.assertIn("/api/report_zhongshu_plan", session["input_history"][-1]["prompt"])
 
     def test_session_snapshot_exposes_recent_transcript_preview(self):
         session_id = "gongchengbu-preview"
@@ -818,33 +913,43 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertIn("selectedBrowserTerminalId", dashboard)
         self.assertNotIn('id="terminal-switcher"', dashboard)
         self.assertIn('id="browser-terminal-grid"', dashboard)
-        self.assertIn("terminalSlotCount = 3", dashboard)
+        self.assertIn("terminalSlotCount = 4", dashboard)
         self.assertIn("function ensureTerminalSlots", dashboard)
         self.assertIn("function orderedRunningTerminals", dashboard)
         self.assertNotIn("function renderTerminalSwitcher", dashboard)
         self.assertIn("function terminalFromSession", dashboard)
         self.assertIn("function mergeBrowserTerminals", dashboard)
+        self.assertIn("await refreshSessions();", dashboard)
 
     def test_dashboard_places_browser_terminal_before_session_list(self):
         dashboard = (Path(__file__).resolve().parent / "dashboard.html").read_text(encoding="utf-8")
 
         self.assertLess(dashboard.index('class="browser-terminal-shell"'), dashboard.index('class="session-shell"'))
-        self.assertIn("width: min(100%, 1440px)", dashboard)
+        self.assertIn("width: 100%", dashboard)
         self.assertIn("justify-items: stretch", dashboard)
         self.assertIn(".browser-terminal-shell", dashboard)
         self.assertIn(".browser-terminal-card", dashboard)
         self.assertIn("grid-template-columns: 1fr", dashboard)
-        self.assertIn("height: clamp(520px, 68vh, 860px)", dashboard)
+        self.assertIn("height: clamp(580px, 74vh, 980px)", dashboard)
 
     def test_browser_terminal_page_uses_stable_full_height_fit(self):
-        terminal_page = (codex_launcher.REPO_ROOT / "tools" / "codex_terminal" / "public" / "index.html").read_text(
-            encoding="utf-8"
-        )
+        terminal_page_path = codex_launcher.REPO_ROOT / "tools" / "codex_terminal" / "public" / "index.html"
+        if not terminal_page_path.exists():
+            self.skipTest("standalone repo does not bundle tools/codex_terminal assets")
+        terminal_page = terminal_page_path.read_text(encoding="utf-8")
 
         self.assertIn("overflow: hidden", terminal_page)
         self.assertIn("flex: 1 1 auto", terminal_page)
+        self.assertIn("#terminal .xterm", terminal_page)
+        self.assertIn("padding: 8px", terminal_page)
         self.assertIn("padding: 0", terminal_page)
         self.assertIn("ResizeObserver", terminal_page)
+        self.assertIn("fitAddon.proposeDimensions()", terminal_page)
+        self.assertIn("function scheduleFitPasses()", terminal_page)
+        self.assertIn("document.fonts.ready", terminal_page)
+        self.assertIn("lastSentCols", terminal_page)
+        self.assertIn("lastSentRows", terminal_page)
+        self.assertIn("dimensions.cols === lastSentCols && dimensions.rows === lastSentRows", terminal_page)
         self.assertIn("disableStdin = true", terminal_page)
         self.assertIn("cursorBlink: false", terminal_page)
         self.assertIn("cursorBlink = false", terminal_page)
@@ -854,12 +959,19 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertNotIn("convertEol: true", terminal_page)
 
     def test_browser_terminal_server_marks_read_only_sessions(self):
-        server = (codex_launcher.REPO_ROOT / "tools" / "codex_terminal" / "server.js").read_text(encoding="utf-8")
+        server_path = codex_launcher.REPO_ROOT / "tools" / "codex_terminal" / "server.js"
+        if not server_path.exists():
+            self.skipTest("standalone repo does not bundle tools/codex_terminal server")
+        server = server_path.read_text(encoding="utf-8")
 
         self.assertIn("CODEX_TERMINAL_READ_ONLY", server)
         self.assertIn("readOnly", server)
         self.assertIn("只读预览终端不接收输入", server)
-        self.assertIn("term.onExit", server)
+        self.assertIn("const clients = new Set();", server)
+        self.assertIn("function ensurePty()", server)
+        self.assertIn('ws.on("close", () => {\n    clients.delete(ws);', server)
+        self.assertNotIn('ws.on("close", () => {\n    finalize();', server)
+        self.assertIn("activeTerm.onExit", server)
         self.assertIn("shutdown();", server)
 
     def test_exited_department_without_report_gets_launcher_fallback(self):
