@@ -411,6 +411,27 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertIn("live output line", event["transcript"])
         self.assertIn("live output line", event["session"]["transcript_preview"])
 
+    def test_codex_runner_uses_terminal_stdout_with_transcript_log(self):
+        script = codex_launcher.build_codex_runner_script(
+            "Codex 中书省 [gpt-5.5]",
+            "gpt-5.5",
+            Path("E:/repo"),
+            Path("E:/repo/.tmp/prompt.txt"),
+            Path("E:/repo/.tmp/session.log"),
+        )
+
+        self.assertIn("Start-Transcript", script)
+        self.assertIn("-Append", script)
+        self.assertIn("run_codex_prompt.py", script)
+        self.assertNotIn("stdout=subprocess.PIPE", Path(codex_launcher.RUNNER).read_text(encoding="utf-8"))
+
+    def test_dashboard_history_uses_scrollable_session_history(self):
+        dashboard = (Path(__file__).resolve().parent / "dashboard.html").read_text(encoding="utf-8")
+
+        self.assertIn('class="session-history-scroll"', dashboard)
+        self.assertIn(".session-history-scroll", dashboard)
+        self.assertIn("overflow-y: auto", dashboard)
+
     def test_exited_department_without_report_gets_launcher_fallback(self):
         parent_session_id = "zhongshu-missing-report"
         codex_launcher.SESSIONS.extend(

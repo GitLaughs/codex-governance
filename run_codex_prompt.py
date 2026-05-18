@@ -36,7 +36,7 @@ def main() -> int:
     parser.add_argument("--repo", required=True)
     parser.add_argument("--prompt-file", required=True)
     parser.add_argument("--title", default="Codex Governance")
-    parser.add_argument("--log-file", help="Mirror Codex stdout/stderr to this UTF-8 log file.")
+    parser.add_argument("--log-file", help="Deprecated. Use launcher-side Start-Transcript logging.")
     parser.add_argument("--dry-run", action="store_true", help="Read and print the prompt without launching Codex.")
     args = parser.parse_args()
 
@@ -63,31 +63,12 @@ def main() -> int:
 
     codex_cmd = resolve_codex_command()
     command = [*codex_cmd, "-m", args.model, "--cd", args.repo, prompt]
-    if not args.log_file:
-        return subprocess.call(command, cwd=args.repo)
-
-    log_path = Path(args.log_file)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8", errors="replace") as log:
-        log.write(f"\n===== Codex session started: {args.title} =====\n")
-        log.flush()
-        process = subprocess.Popen(
-            command,
-            cwd=args.repo,
-            stdin=None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
-        assert process.stdout is not None
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            log.write(line)
-            log.flush()
-        return process.wait()
+    if args.log_file:
+        log_path = Path(args.log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8", errors="replace") as log:
+            log.write(f"\n===== Codex session started: {args.title} =====\n")
+    return subprocess.call(command, cwd=args.repo)
 
 
 if __name__ == "__main__":

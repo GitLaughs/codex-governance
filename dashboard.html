@@ -730,6 +730,14 @@
       gap: var(--space-2);
     }
 
+    .session-history-scroll {
+      max-height: clamp(360px, 48vh, 680px);
+      overflow-y: auto;
+      padding-right: var(--space-1);
+      scrollbar-width: thin;
+      scrollbar-color: var(--color-neutral-300) transparent;
+    }
+
     .session-toolbar {
       display: flex;
       gap: var(--space-2);
@@ -1012,7 +1020,9 @@
                 <div id="session-terminal" class="session-viewer-host"></div>
               </div>
               <p class="session-viewer-note">会话元数据 viewer 已接入 launcher stream。选中运行中的会话后可直接输入，回车发送到对应 Codex 窗口。</p>
-              <div id="session-list" class="session-list"></div>
+              <div class="session-history-scroll">
+                <div id="session-list" class="session-list"></div>
+              </div>
             </div>
           </section>
           <section class="terminal-overview" aria-label="运行终端概览">

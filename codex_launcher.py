@@ -808,6 +808,31 @@ def send_session_input(session_id: str, text: str) -> dict:
     return {"ok": True, "session_id": session_id, "sent_at": history[-1]["sent_at"]}
 
 
+def build_codex_runner_script(
+    window_title: str,
+    selected_model: str,
+    repo: Path,
+    prompt_path: Path,
+    log_path: Path,
+) -> str:
+    return (
+        "$ErrorActionPreference = 'Stop'; "
+        f"$Host.UI.RawUI.WindowTitle = {ps_quote(window_title)}; "
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        "$exitCode = 1; "
+        f"Start-Transcript -Path {ps_quote(str(log_path))} -Append | Out-Null; "
+        "try { "
+        f"python -X utf8 {ps_quote(str(RUNNER))} "
+        f"--model {ps_quote(selected_model)} "
+        f"--repo {ps_quote(str(repo))} "
+        f"--prompt-file {ps_quote(str(prompt_path))} "
+        f"--title {ps_quote(window_title)}; "
+        "$exitCode = $LASTEXITCODE "
+        "} finally { Stop-Transcript | Out-Null }; "
+        "exit $exitCode"
+    )
+
+
 def start_codex_terminal(
     prompt: str,
     prefix: str,
@@ -829,17 +854,13 @@ def start_codex_terminal(
         mailbox = ensure_zhongshu_mailbox(parent_session_id)
     prompt_path = write_prompt(prefix, prompt)
     log_path = write_session_log_path(resolved_session_id, prefix)
-    repo = str(REPO_ROOT)
     window_title = f"Codex {title or prefix} [{selected_model}]"
-    script = (
-        f"$Host.UI.RawUI.WindowTitle = {ps_quote(window_title)}; "
-        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
-        f"python -X utf8 {ps_quote(str(RUNNER))} "
-        f"--model {ps_quote(selected_model)} "
-        f"--repo {ps_quote(repo)} "
-        f"--prompt-file {ps_quote(str(prompt_path))} "
-        f"--log-file {ps_quote(str(log_path))} "
-        f"--title {ps_quote(window_title)}"
+    script = build_codex_runner_script(
+        window_title,
+        selected_model,
+        REPO_ROOT,
+        prompt_path,
+        log_path,
     )
     process = subprocess.Popen(
         [
