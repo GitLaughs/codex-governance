@@ -1,0 +1,74 @@
+version: 1
+name: codex_governance_default
+
+provinces:
+  zhongshu:
+    title: 中书省
+    duty: 任务拆分、范围判断、拟定执行计划
+  menxia:
+    title: 门下省
+    duty: 风险复核、边界检查、必要时驳回
+  shangshu:
+    title: 尚书省
+    duty: 按三部执行、验证、交付
+
+departments:
+  zhilibu:
+    title: 治理部
+    duty: 任务拆分、代理规则、README、文档、发布说明
+    globs:
+      - AGENTS.md
+      - CLAUDE.md
+      - README.md
+      - API.md
+      - CONTRIBUTING.md
+      - INDEPENDENT_RELEASE_PLAN.md
+      - SECURITY.md
+      - RELEASING.md
+      - LICENSE
+      - docs/**
+      - "**/README.md"
+    verify:
+      - git status --short
+      - python codex_governance.py
+  gongchengbu:
+    title: 工程部
+    duty: launcher、前端、脚本、验证、回归、发布链路
+    globs:
+      - "*.py"
+      - "*.ps1"
+      - "*.html"
+      - "*.yaml"
+      - .gitignore
+      - scripts/**
+      - tests/**
+      - "**/tests/**"
+      - tools/**
+    verify:
+      - python -m py_compile codex_governance.py codex_launcher.py run_codex_prompt.py
+      - python codex_governance.py --json
+  lingyubu:
+    title: 领域部
+    duty: 领域实现、业务代码、集成联调
+    globs:
+      - src/**
+      - app/**
+      - packages/**
+      - data/**
+      - models/**
+    verify:
+      - git status --short
+
+risk_rules:
+  - name: runtime_artifact
+    level: high
+    pattern: output/
+    message: output 是构建产物，不应作为源码或提交对象
+  - name: secret_file
+    level: high
+    pattern: .env
+    message: 疑似环境变量或密钥文件，提交前需确认脱敏
+  - name: vendor_tree
+    level: medium
+    pattern: vendor/
+    message: vendor 目录通常是外部导入，修改前需说明来源和边界

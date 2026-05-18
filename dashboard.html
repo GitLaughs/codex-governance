@@ -1,0 +1,1384 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex 三省三部治理看板</title>
+  <style>
+    :root {
+      --color-primary: #0969da;
+      --color-secondary: #1f883d;
+      --color-neutral-0: #ffffff;
+      --color-neutral-50: #f6f8fa;
+      --color-neutral-100: #eaeef2;
+      --color-neutral-200: #d0d7de;
+      --color-neutral-300: #afb8c1;
+      --color-neutral-600: #57606a;
+      --color-neutral-700: #424a53;
+      --color-neutral-900: #24292f;
+      --color-success: #1a7f37;
+      --color-warning: #9a6700;
+      --color-error: #cf222e;
+      --text-xs: 12px;
+      --text-sm: 14px;
+      --text-base: 16px;
+      --text-lg: 20px;
+      --text-xl: 24px;
+      --text-2xl: 32px;
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-6: 24px;
+      --space-8: 32px;
+      --space-12: 48px;
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--color-neutral-50);
+      color: var(--color-neutral-900);
+      font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+      font-size: var(--text-sm);
+      font-weight: 400;
+      line-height: 1.5;
+    }
+
+    button,
+    textarea,
+    select {
+      font: inherit;
+    }
+
+    .topbar {
+      background: var(--color-neutral-900);
+      color: var(--color-neutral-0);
+      border-bottom: 1px solid var(--color-neutral-900);
+    }
+
+    .topbar-inner {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: var(--space-3) var(--space-6);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-4);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      min-width: 0;
+    }
+
+    .mark {
+      width: 32px;
+      height: 32px;
+      border: 1px solid rgba(255, 255, 255, 0.24);
+      border-radius: var(--radius-sm);
+      display: grid;
+      place-items: center;
+      font-size: var(--text-xs);
+      font-weight: 600;
+      color: var(--color-neutral-0);
+    }
+
+    .brand-title {
+      margin: 0;
+      font-size: var(--text-base);
+      font-weight: 600;
+      line-height: 1.25;
+      white-space: nowrap;
+    }
+
+    .brand-subtitle {
+      margin: 0;
+      color: var(--color-neutral-300);
+      font-size: var(--text-xs);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .button {
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      background: var(--color-neutral-0);
+      color: var(--color-neutral-900);
+      padding: var(--space-2) var(--space-3);
+      cursor: pointer;
+      min-height: 36px;
+    }
+
+    .button:hover {
+      background: var(--color-neutral-50);
+    }
+
+    .button.primary {
+      border-color: var(--color-primary);
+      background: var(--color-primary);
+      color: var(--color-neutral-0);
+    }
+
+    .button.primary:hover {
+      background: #0757b8;
+    }
+
+    .button.dark {
+      border-color: rgba(255, 255, 255, 0.24);
+      background: transparent;
+      color: var(--color-neutral-0);
+    }
+
+    .button.dark:hover {
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    .page {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: var(--space-6);
+    }
+
+    .repo-header {
+      background: var(--color-neutral-0);
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-md);
+      padding: var(--space-4);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-4);
+      align-items: start;
+    }
+
+    .repo-path {
+      margin: 0 0 var(--space-2);
+      font-size: var(--text-xl);
+      line-height: 1.25;
+      font-weight: 600;
+    }
+
+    .muted {
+      color: var(--color-neutral-600);
+    }
+
+    .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-2);
+      margin-top: var(--space-3);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      border: 1px solid var(--color-neutral-200);
+      border-radius: 999px;
+      background: var(--color-neutral-50);
+      color: var(--color-neutral-700);
+      padding: var(--space-1) var(--space-2);
+      font-size: var(--text-xs);
+      white-space: nowrap;
+    }
+
+    .pill.success {
+      border-color: #aceebb;
+      background: #dafbe1;
+      color: var(--color-success);
+    }
+
+    .pill.warning {
+      border-color: #d4a72c;
+      background: #fff8c5;
+      color: var(--color-warning);
+    }
+
+    .tabs {
+      display: flex;
+      gap: var(--space-1);
+      border-bottom: 1px solid var(--color-neutral-200);
+      margin-top: var(--space-6);
+    }
+
+    .tab {
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--color-neutral-700);
+      padding: var(--space-3) var(--space-4);
+      cursor: pointer;
+    }
+
+    .tab.active {
+      border-bottom-color: #fd8c73;
+      color: var(--color-neutral-900);
+      font-weight: 600;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr) 320px;
+      gap: var(--space-4);
+      margin-top: var(--space-4);
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--color-neutral-0);
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-1);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: var(--space-3) var(--space-4);
+      border-bottom: 1px solid var(--color-neutral-200);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+    }
+
+    .panel-title {
+      margin: 0;
+      font-size: var(--text-base);
+      line-height: 1.25;
+      font-weight: 600;
+    }
+
+    .panel-body {
+      padding: var(--space-4);
+    }
+
+    .stack-panel {
+      margin-top: var(--space-4);
+    }
+
+    .flow {
+      display: grid;
+      gap: var(--space-3);
+    }
+
+    .flow-step {
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      padding: var(--space-3);
+      background: var(--color-neutral-50);
+    }
+
+    .flow-step strong {
+      display: block;
+      margin-bottom: var(--space-1);
+      font-size: var(--text-sm);
+    }
+
+    .flow-step p {
+      margin: 0;
+      color: var(--color-neutral-600);
+      font-size: var(--text-xs);
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--space-3);
+      margin-bottom: var(--space-4);
+    }
+
+    .summary {
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      padding: var(--space-3);
+      background: var(--color-neutral-50);
+    }
+
+    .summary-value {
+      display: block;
+      font-size: var(--text-xl);
+      line-height: 1.25;
+      font-weight: 600;
+    }
+
+    .summary-label {
+      color: var(--color-neutral-600);
+      font-size: var(--text-xs);
+    }
+
+    .department-list {
+      display: grid;
+      gap: var(--space-3);
+    }
+
+    details.department {
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      background: var(--color-neutral-0);
+    }
+
+    details.department[open] {
+      box-shadow: var(--shadow-1);
+    }
+
+    .department summary {
+      cursor: pointer;
+      list-style: none;
+      padding: var(--space-3) var(--space-4);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-3);
+      align-items: center;
+    }
+
+    .department summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .department-title {
+      margin: 0;
+      font-size: var(--text-base);
+      font-weight: 600;
+    }
+
+    .department-duty {
+      margin: var(--space-1) 0 0;
+      color: var(--color-neutral-600);
+      font-size: var(--text-xs);
+    }
+
+    .file-list,
+    .command-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: var(--space-2);
+    }
+
+    .file-list {
+      padding: 0 var(--space-4) var(--space-4);
+    }
+
+    .file-item {
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      padding: var(--space-2) var(--space-3);
+      background: var(--color-neutral-50);
+      color: var(--color-neutral-700);
+      font-size: var(--text-xs);
+      overflow-wrap: anywhere;
+    }
+
+    .risk-list {
+      display: grid;
+      gap: var(--space-2);
+    }
+
+    .risk {
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      padding: var(--space-3);
+      background: var(--color-neutral-50);
+    }
+
+    .risk.high {
+      border-color: #ffb3ba;
+      background: #ffebe9;
+    }
+
+    .risk.medium {
+      border-color: #d4a72c;
+      background: #fff8c5;
+    }
+
+    .risk-title {
+      margin: 0 0 var(--space-1);
+      font-weight: 600;
+      font-size: var(--text-sm);
+    }
+
+    .risk-text {
+      margin: 0;
+      color: var(--color-neutral-700);
+      font-size: var(--text-xs);
+      overflow-wrap: anywhere;
+    }
+
+    .command {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-2);
+      align-items: center;
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      background: var(--color-neutral-50);
+      padding: var(--space-2);
+    }
+
+    code {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: var(--text-xs);
+      color: var(--color-neutral-900);
+      overflow-wrap: anywhere;
+    }
+
+    .copy {
+      min-height: 32px;
+      padding: var(--space-1) var(--space-2);
+      font-size: var(--text-xs);
+    }
+
+    .task-box {
+      width: 100%;
+      min-height: 104px;
+      resize: vertical;
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      padding: var(--space-3);
+      background: var(--color-neutral-0);
+      color: var(--color-neutral-900);
+      font-size: var(--text-sm);
+      line-height: 1.5;
+    }
+
+    .model-select {
+      width: 150px;
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      background: var(--color-neutral-0);
+      color: var(--color-neutral-900);
+      padding: var(--space-2);
+      font-size: var(--text-xs);
+    }
+
+    .status-line {
+      min-height: 24px;
+      color: var(--color-neutral-600);
+      font-size: var(--text-xs);
+      margin-top: var(--space-2);
+    }
+
+    .launcher-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-3);
+      align-items: end;
+    }
+
+    .launcher-actions {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      display: none;
+      place-items: center;
+      padding: var(--space-6);
+      background: rgba(31, 35, 40, 0.46);
+      z-index: 20;
+    }
+
+    .modal-backdrop.open {
+      display: grid;
+    }
+
+    .modal {
+      width: min(920px, 100%);
+      max-height: min(760px, 90vh);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      background: var(--color-neutral-0);
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-md);
+      box-shadow: 0 16px 48px rgba(31, 35, 40, 0.28);
+      overflow: hidden;
+    }
+
+    .modal-body {
+      padding: var(--space-4);
+      overflow: auto;
+    }
+
+    .modal-footer {
+      padding: var(--space-3) var(--space-4);
+      border-top: 1px solid var(--color-neutral-200);
+      display: flex;
+      justify-content: flex-end;
+      gap: var(--space-2);
+      flex-wrap: wrap;
+    }
+
+    .assignment-list {
+      display: grid;
+      gap: var(--space-3);
+    }
+
+    .assignment {
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      padding: var(--space-3);
+      background: var(--color-neutral-50);
+    }
+
+    .assignment label {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: var(--space-3);
+      align-items: start;
+      cursor: pointer;
+    }
+
+    .assignment-title {
+      margin: 0;
+      font-weight: 600;
+    }
+
+    .assignment-duty {
+      margin: var(--space-1) 0 0;
+      color: var(--color-neutral-600);
+      font-size: var(--text-xs);
+    }
+
+    .terminal-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: var(--space-3);
+      margin-top: var(--space-4);
+    }
+
+    .terminal-card {
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      padding: var(--space-3);
+      background: var(--color-neutral-50);
+      min-height: 112px;
+    }
+
+    .terminal-card.running {
+      border-color: #aceebb;
+      background: #dafbe1;
+    }
+
+    .terminal-title {
+      margin: 0 0 var(--space-1);
+      font-weight: 600;
+    }
+
+    .terminal-meta {
+      margin: 0;
+      color: var(--color-neutral-600);
+      font-size: var(--text-xs);
+      overflow-wrap: anywhere;
+    }
+
+    .session-list {
+      display: grid;
+      gap: var(--space-2);
+    }
+
+    .session-item {
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      padding: var(--space-2) var(--space-3);
+      background: var(--color-neutral-50);
+    }
+
+    .empty {
+      border: 1px dashed var(--color-neutral-300);
+      border-radius: var(--radius-sm);
+      padding: var(--space-6);
+      text-align: center;
+      color: var(--color-neutral-600);
+      background: var(--color-neutral-50);
+    }
+
+    @media (max-width: 1180px) {
+      .layout {
+        grid-template-columns: 240px minmax(0, 1fr);
+      }
+
+      .right-column {
+        grid-column: 1 / -1;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .topbar-inner,
+      .repo-header {
+        grid-template-columns: 1fr;
+      }
+
+      .topbar-inner {
+        align-items: flex-start;
+      }
+
+      .top-actions {
+        justify-content: flex-start;
+      }
+
+      .page {
+        padding: var(--space-4);
+      }
+
+      .repo-header,
+      .layout,
+      .launcher-grid,
+      .terminal-grid,
+      .summary-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .tabs {
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="mark">CG</div>
+        <div>
+          <h1 class="brand-title">Codex 三省三部治理看板</h1>
+          <p class="brand-subtitle">Local-first Codex governance dashboard</p>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="panel-title">Codex 终端启动器</h2>
+        <span class="pill" id="launcher-pill">launcher 未连接</span>
+      </div>
+      <div class="panel-body">
+        <div class="launcher-grid">
+          <div>
+            <textarea class="task-box" id="task-input" spellcheck="false" placeholder="输入要直接发给中书省的首条提示词；多行内容会自动压成单行"></textarea>
+            <div class="status-line" id="launcher-status">使用 tools\codex_governance\launch.ps1 启动本地 launcher。这里输入的内容会直接作为中书省首条提示词发送；多行会自动压成单行。</div>
+          </div>
+          <div class="launcher-actions">
+            <button class="button primary" id="start-zhongshu">启动中书省会话</button>
+            <button class="button" id="refresh-report">刷新报告</button>
+          </div>
+        </div>
+        <div class="terminal-grid" id="terminal-grid"></div>
+      </div>
+    </section>
+
+    <section class="repo-header">
+      <div>
+        <p class="repo-path">Codex Governance</p>
+        <p class="muted">报告由本地 launcher 自动读取：左侧流程，中间三部分派，右侧风险与验证命令。</p>
+        <div class="meta-row">
+          <span class="pill success" id="mode-pill">worktree</span>
+          <span class="pill" id="count-pill">0 changed files</span>
+          <span class="pill warning" id="risk-pill">0 risks</span>
+        </div>
+      </div>
+    </section>
+
+    <nav class="tabs" aria-label="report modes">
+      <button class="tab active" data-mode="worktree">当前改动</button>
+      <button class="tab" data-mode="staged">暂存改动</button>
+      <button class="tab" data-mode="base">基线对比</button>
+    </nav>
+
+    <section class="layout">
+      <aside class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">三省流程</h2>
+        </div>
+        <div class="panel-body">
+          <div class="flow" id="province-flow"></div>
+        </div>
+      </aside>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">三部分派</h2>
+          <span class="pill" id="department-pill">0 departments</span>
+        </div>
+        <div class="panel-body">
+          <div class="summary-grid">
+            <div class="summary">
+              <span class="summary-value" id="changed-count">0</span>
+              <span class="summary-label">改动文件</span>
+            </div>
+            <div class="summary">
+              <span class="summary-value" id="department-count">0</span>
+              <span class="summary-label">命中部门</span>
+            </div>
+            <div class="summary">
+              <span class="summary-value" id="verify-count">0</span>
+              <span class="summary-label">建议验证</span>
+            </div>
+          </div>
+          <div id="department-list" class="department-list"></div>
+        </div>
+      </section>
+
+      <aside class="right-column">
+        <section class="panel">
+          <div class="panel-header">
+            <h2 class="panel-title">风险复核</h2>
+          </div>
+          <div class="panel-body">
+            <div id="risk-list" class="risk-list"></div>
+          </div>
+        </section>
+
+        <section class="panel stack-panel">
+          <div class="panel-header">
+            <h2 class="panel-title">建议验证</h2>
+          </div>
+          <div class="panel-body">
+            <ul id="command-list" class="command-list"></ul>
+          </div>
+        </section>
+
+        <section class="panel stack-panel">
+          <div class="panel-header">
+            <h2 class="panel-title">Codex 终端</h2>
+            <button class="button copy" id="refresh-sessions">刷新</button>
+          </div>
+          <div class="panel-body">
+            <div id="session-list" class="session-list"></div>
+          </div>
+        </section>
+      </aside>
+    </section>
+
+  </main>
+
+  <div class="modal-backdrop" id="assignment-modal" role="dialog" aria-modal="true" aria-labelledby="assignment-title">
+    <div class="modal">
+      <div class="panel-header">
+        <h2 class="panel-title" id="assignment-title">确认启动 Codex 终端</h2>
+        <span class="pill warning" id="assignment-limit">最多 2 个</span>
+      </div>
+      <div class="modal-body">
+        <p class="muted" id="assignment-summary">中书省正在生成分配方案。</p>
+        <div class="assignment-list" id="assignment-list"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="button" id="cancel-assignments">取消</button>
+        <button class="button primary" id="confirm-assignments">确认启动</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const emptyReport = {
+      title: "Codex 三省三部治理报告",
+      mode: "worktree",
+      base: null,
+      changed_count: 0,
+      changed_paths: [],
+      provinces: [
+        { key: "zhongshu", title: "中书省", duty: "任务拆分、范围判断、拟定执行计划" },
+        { key: "menxia", title: "门下省", duty: "风险复核、边界检查、必要时驳回" },
+        { key: "shangshu", title: "尚书省", duty: "按三部分派执行、验证、交付" }
+      ],
+      departments: [],
+      uncategorized: [],
+      risks: [],
+      verify_commands: []
+    };
+
+    const params = new URLSearchParams(window.location.search);
+    const launcherBase = params.get("launcher") || "http://127.0.0.1:6211";
+    let activeReport = emptyReport;
+    let activeMode = "worktree";
+    let launcherReady = false;
+    let pendingPlan = null;
+    let activeSessions = [];
+    let activeQueue = [];
+    let activeZhongshuSessions = [];
+    let zhongshuInboxMap = {};
+    let pendingPlanSessionId = null;
+    let planPollTimer = null;
+    let launcherModelChoices = ["gpt-5.5", "gpt-5.4"];
+
+    function setText(id, value) {
+      document.getElementById(id).textContent = value;
+    }
+
+    function emptyState(text) {
+      const div = document.createElement("div");
+      div.className = "empty";
+      div.textContent = text;
+      return div;
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function normalizeTaskInput(value) {
+      return String(value || "")
+        .replaceAll("\r\n", "\n")
+        .replaceAll("\r", "\n")
+        .split("\n")
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function preferredZhongshuModel() {
+      return launcherModelChoices[0] || "gpt-5.5";
+    }
+
+    function renderFlow(report) {
+      const flow = document.getElementById("province-flow");
+      flow.innerHTML = "";
+      report.provinces.forEach((province) => {
+        const item = document.createElement("div");
+        item.className = "flow-step";
+        item.innerHTML = `<strong>${province.title}</strong><p>${province.duty}</p>`;
+        flow.appendChild(item);
+      });
+    }
+
+    function renderDepartments(report) {
+      const list = document.getElementById("department-list");
+      list.innerHTML = "";
+      if (!report.departments.length) {
+        list.appendChild(emptyState("暂无下属部门分派。"));
+        return;
+      }
+
+      report.departments.forEach((department, index) => {
+        const details = document.createElement("details");
+        details.className = "department";
+        details.open = index === 0;
+        const files = department.files.map((file) => `<li class="file-item">${escapeHtml(file)}</li>`).join("");
+        const task = `按${department.title}职责处理当前任务：${document.getElementById("task-input").value.trim()}`;
+        details.innerHTML = `
+          <summary>
+            <div>
+              <p class="department-title">${escapeHtml(department.title)}</p>
+              <p class="department-duty">${escapeHtml(department.duty)}</p>
+            </div>
+            <span class="pill">${department.files.length} files</span>
+          </summary>
+          <div class="file-list">
+            <button class="button" data-start-department="${escapeHtml(department.key)}" data-task="${escapeHtml(task)}">启动${escapeHtml(department.title)}</button>
+          </div>
+          <ul class="file-list">${files}</ul>
+        `;
+        list.appendChild(details);
+      });
+    }
+
+    function showAssignmentModal(plan) {
+      pendingPlan = plan;
+      const list = document.getElementById("assignment-list");
+      const available = Math.max(0, (plan.max_department_sessions || plan.max_terminals || 0) - (plan.active_department_sessions || plan.active_terminals || 0));
+      list.innerHTML = "";
+      document.getElementById("assignment-limit").textContent =
+        `并发上限 ${plan.max_department_sessions || plan.max_terminals}`;
+      document.getElementById("assignment-summary").textContent =
+        `${plan.summary} 先启动 ${Math.min(available, plan.assignments.length)} 个，其余自动排队。`;
+
+      if (!plan.assignments.length) {
+        list.appendChild(emptyState("当前报告没有可启动的部门。"));
+      }
+
+      plan.assignments.forEach((assignment, index) => {
+        const checked = assignment.selected !== false;
+        const disabled = false;
+        const files = assignment.files.slice(0, 4).map((file) => escapeHtml(file)).join("<br>");
+        const verify = (assignment.verify || []).map((command) => escapeHtml(command)).join("<br>");
+        const modelOptions = plan.model_choices.map((model) => {
+          const selected = model === assignment.model ? "selected" : "";
+          return `<option value="${escapeHtml(model)}" ${selected}>${escapeHtml(model)}</option>`;
+        }).join("");
+        const item = document.createElement("div");
+        item.className = "assignment";
+        item.innerHTML = `
+          <label>
+            <input type="checkbox" data-assignment-index="${index}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>
+            <div>
+              <p class="assignment-title">${escapeHtml(assignment.title)}</p>
+              <p class="assignment-duty">${escapeHtml(assignment.duty)}</p>
+              <p class="assignment-duty">推荐模型：${escapeHtml(assignment.model)}。${escapeHtml(assignment.model_reason || assignment.reason || "")}</p>
+              <p class="assignment-duty">顺序：第 ${index + 1} 位${index >= available ? "，将进入队列" : "，优先启动"}</p>
+              <p class="assignment-duty">${files || "无命中文件"}</p>
+              <details>
+                <summary>任务与验证</summary>
+                <p class="assignment-duty">任务：</p>
+                <textarea class="task-box" data-task-index="${index}" spellcheck="false">${escapeHtml(assignment.task || "")}</textarea>
+                <p class="assignment-duty">建议验证：</p>
+                <p class="assignment-duty">${verify || "无"}</p>
+              </details>
+            </div>
+            <div>
+              <select class="model-select" data-model-index="${index}" ${disabled ? "disabled" : ""}>
+                ${modelOptions}
+              </select>
+              <span class="pill">${escapeHtml(assignment.department)}</span>
+            </div>
+          </label>
+        `;
+        list.appendChild(item);
+      });
+
+      document.getElementById("confirm-assignments").disabled = !plan.assignments.length;
+      document.getElementById("assignment-modal").classList.add("open");
+    }
+
+    function hideAssignmentModal() {
+      document.getElementById("assignment-modal").classList.remove("open");
+    }
+
+    function renderRisks(report) {
+      const list = document.getElementById("risk-list");
+      list.innerHTML = "";
+      if (!report.risks.length) {
+        list.appendChild(emptyState("未命中高风险路径规则。"));
+        return;
+      }
+
+      report.risks.forEach((risk) => {
+        const item = document.createElement("div");
+        item.className = `risk ${risk.level}`;
+        item.innerHTML = `
+          <p class="risk-title">[${escapeHtml(risk.level)}] ${escapeHtml(risk.name)}</p>
+          <p class="risk-text">${escapeHtml(risk.path)}</p>
+          <p class="risk-text">${escapeHtml(risk.message)}</p>
+        `;
+        list.appendChild(item);
+      });
+    }
+
+    function renderCommands(report) {
+      const list = document.getElementById("command-list");
+      list.innerHTML = "";
+      if (!report.verify_commands.length) {
+        list.appendChild(emptyState("暂无建议验证。"));
+        return;
+      }
+
+      report.verify_commands.forEach((command) => {
+        const item = document.createElement("li");
+        item.className = "command";
+        item.innerHTML = `<code>${escapeHtml(command)}</code><button class="button copy" data-copy="${escapeHtml(command)}">复制</button>`;
+        list.appendChild(item);
+      });
+    }
+
+    function renderSessions(sessions = [], queue = activeQueue) {
+      activeSessions = sessions;
+      activeQueue = queue || [];
+      const running = sessions.filter((session) => session.status === "running");
+      const terminalGrid = document.getElementById("terminal-grid");
+      terminalGrid.innerHTML = "";
+      if (!running.length) {
+        const card = document.createElement("div");
+        card.className = "terminal-card";
+        card.innerHTML = `
+          <p class="terminal-title">暂无运行中的会话</p>
+          <p class="terminal-meta">先启动中书省会话，再由中书省拉起部门。</p>
+        `;
+        terminalGrid.appendChild(card);
+      } else {
+        running.forEach((session) => {
+          const card = document.createElement("div");
+          card.className = "terminal-card running";
+          const roleLabel = session.session_kind === "zhongshu" ? "中书省" : (session.department || "department");
+          const parentMeta = session.parent_session_id ? `<p class="terminal-meta">上级 ${escapeHtml(session.parent_session_id)}</p>` : "";
+          const unreadMeta = session.session_kind === "zhongshu"
+            ? `<p class="terminal-meta">未读回传 ${escapeHtml(session.unread_result_count || 0)}</p>`
+            : `<p class="terminal-meta">回传状态 ${escapeHtml(session.report_status || "pending")}</p>`;
+          card.innerHTML = `
+            <p class="terminal-title">${escapeHtml(session.title)} <span class="pill">${escapeHtml(roleLabel)}</span></p>
+            <p class="terminal-meta">PID ${escapeHtml(session.pid)}</p>
+            <p class="terminal-meta">${escapeHtml(session.model || "unknown model")}</p>
+            ${parentMeta}
+            ${unreadMeta}
+            <p class="terminal-meta">${escapeHtml(session.started_at)}</p>
+          `;
+          terminalGrid.appendChild(card);
+        });
+      }
+
+      const list = document.getElementById("session-list");
+      list.innerHTML = "";
+      if (!activeZhongshuSessions.length && !activeQueue.length) {
+        list.appendChild(emptyState("暂无中书省会话记录。"));
+        return;
+      }
+
+      activeZhongshuSessions.forEach((session) => {
+        const item = document.createElement("div");
+        item.className = "session-item";
+        const status = session.status === "running" ? "正在运行" : "历史";
+        const inbox = zhongshuInboxMap[session.id] || {};
+        const childDepartments = session.child_departments || [];
+        const queuedDepartments = session.queued_departments || [];
+        const unreadResults = inbox.unread_results || [];
+        const childHtml = childDepartments.length
+          ? childDepartments.map((child) => `
+            <p class="terminal-meta">- ${escapeHtml(child.title)} / ${escapeHtml(child.model || "unknown model")} / ${escapeHtml(child.status || "unknown")} / 回传 ${escapeHtml(child.report_status || "pending")}</p>
+          `).join("")
+          : `<p class="terminal-meta">- 暂无下挂部门</p>`;
+        const queuedHtml = queuedDepartments.length
+          ? queuedDepartments.map((queued) => `
+            <p class="terminal-meta">- 排队 ${escapeHtml(queued.title)} / ${escapeHtml(queued.model || "unknown model")} / ${escapeHtml(queued.queued_at || "")}</p>
+          `).join("")
+          : `<p class="terminal-meta">- 无排队部门</p>`;
+        const unreadHtml = unreadResults.length
+          ? unreadResults.slice(0, 3).map((result) => `
+            <p class="terminal-meta">- ${escapeHtml(result.department || "unknown")} / ${escapeHtml(result.summary || "无摘要")} ${result.needs_user_confirmation ? "<span class=\"pill warning\">待确认</span>" : ""}</p>
+          `).join("")
+          : `<p class="terminal-meta">- 暂无未读回传</p>`;
+        item.innerHTML = `
+          <p class="terminal-title">${escapeHtml(session.title)} <span class="pill">中书省</span> <span class="pill">${status}</span></p>
+          <p class="terminal-meta">PID ${escapeHtml(session.pid)} / ${escapeHtml(session.model || "unknown model")} / 未读 ${escapeHtml(session.unread_result_count || 0)}</p>
+          <p class="terminal-meta">${escapeHtml(session.prompt_path)}</p>
+          <p class="terminal-meta">${escapeHtml(session.started_at)}${session.ended_at ? " -> " + escapeHtml(session.ended_at) : ""}</p>
+          ${session.status !== "running" ? `<button class="button" data-restart-zhongshu="${escapeHtml(session.id)}">恢复中书省</button>` : ""}
+          <p class="terminal-meta">下挂部门：</p>
+          ${childHtml}
+          <p class="terminal-meta">队列：</p>
+          ${queuedHtml}
+          <p class="terminal-meta">未读回传：</p>
+          ${unreadHtml}
+        `;
+        list.appendChild(item);
+      });
+
+      if (activeQueue.length) {
+        activeQueue.forEach((item, index) => {
+          const queued = document.createElement("div");
+          queued.className = "session-item";
+          queued.innerHTML = `
+            <p class="terminal-title">全局排队 ${index + 1}: ${escapeHtml(item.title)} <span class="pill warning">等待</span></p>
+            <p class="terminal-meta">${escapeHtml(item.department)} / ${escapeHtml(item.model || "unknown model")} / 上级 ${escapeHtml(item.parent_session_id || "-")}</p>
+          `;
+          list.appendChild(queued);
+        });
+      }
+    }
+
+    function renderReport(report) {
+      activeReport = report;
+      setText("mode-pill", report.mode || "worktree");
+      setText("count-pill", `${report.changed_count} changed files`);
+      setText("risk-pill", `${report.risks.length} risks`);
+      setText("changed-count", report.changed_count);
+      setText("department-count", report.departments.length);
+      setText("verify-count", report.verify_commands.length);
+      setText("department-pill", `${report.departments.length} departments`);
+      renderFlow(report);
+      renderDepartments(report);
+      renderRisks(report);
+      renderCommands(report);
+    }
+
+    function setMode(mode) {
+      activeMode = mode;
+      document.querySelectorAll(".tab").forEach((tab) => {
+        tab.classList.toggle("active", tab.dataset.mode === mode);
+      });
+    }
+
+    function setLauncherStatus(ok, text) {
+      launcherReady = ok;
+      const pill = document.getElementById("launcher-pill");
+      pill.textContent = ok ? "launcher 已连接" : "launcher 未连接";
+      pill.classList.toggle("success", ok);
+      pill.classList.toggle("warning", !ok);
+      document.getElementById("launcher-status").textContent = text;
+    }
+
+    async function launcherFetch(path, options = {}) {
+      const response = await fetch(`${launcherBase}${path}`, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {})
+        }
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = await response.json();
+      if (!payload.ok) {
+        throw new Error(payload.error || "launcher error");
+      }
+      return payload;
+    }
+
+    async function checkLauncher() {
+      try {
+        const payload = await launcherFetch("/api/status");
+        launcherModelChoices = payload.model_choices || launcherModelChoices;
+        setLauncherStatus(true, `已连接：${launcherBase}，仓库：${payload.repo}`);
+        activeZhongshuSessions = payload.zhongshu_sessions || [];
+        renderSessions(payload.sessions || [], payload.queue || []);
+      } catch (error) {
+        setLauncherStatus(false, `未连接 launcher。先运行：.\\tools\\codex_governance\\launch.ps1`);
+        renderSessions([]);
+      }
+    }
+
+    async function refreshSessions() {
+      const [payload, zhongshuPayload] = await Promise.all([
+        launcherFetch("/api/sessions"),
+        launcherFetch("/api/zhongshu_sessions")
+      ]);
+      launcherModelChoices = payload.model_choices || launcherModelChoices;
+      activeZhongshuSessions = zhongshuPayload.zhongshu_sessions || [];
+      const inboxPayloads = await Promise.all(
+        activeZhongshuSessions.map((session) =>
+          launcherFetch(`/api/zhongshu_inbox?id=${encodeURIComponent(session.id)}&peek=1`).catch(() => null)
+        )
+      );
+      zhongshuInboxMap = {};
+      inboxPayloads.forEach((inbox) => {
+        if (inbox && inbox.session && inbox.session.id) {
+          zhongshuInboxMap[inbox.session.id] = inbox;
+        }
+      });
+      renderSessions(payload.sessions || [], payload.queue || []);
+      document.getElementById("launcher-status").textContent =
+        `中书省会话：${payload.active_zhongshu_sessions || 0}，部门终端：${payload.active_department_sessions || 0} / ${payload.max_department_sessions || payload.max_terminals}，队列：${(payload.queue || []).length}`;
+    }
+
+    async function refreshReport() {
+      if (!launcherReady) {
+        await checkLauncher();
+      }
+      if (!launcherReady) {
+        return;
+      }
+      let query = "mode=worktree";
+      if (activeMode === "staged") {
+        query = "mode=staged";
+      } else if (activeMode === "base") {
+        query = "base=HEAD~1";
+      }
+      const payload = await launcherFetch(`/api/report?${query}`);
+      renderReport(payload.report);
+      document.getElementById("launcher-status").textContent = `已自动读取 ${activeMode} 报告：${launcherBase}`;
+    }
+
+    async function startZhongshu() {
+      const input = document.getElementById("task-input");
+      const task = normalizeTaskInput(input.value);
+      if (!task) {
+        document.getElementById("launcher-status").textContent = "任务为空，未启动。";
+        return;
+      }
+      input.value = task;
+      const payload = await launcherFetch("/api/start_zhongshu_session", {
+        method: "POST",
+        body: JSON.stringify({ task, model: preferredZhongshuModel() })
+      });
+      pendingPlanSessionId = payload.session.id;
+      pendingPlan = null;
+      document.getElementById("launcher-status").textContent =
+        `已启动中书省会话：${payload.session.id}。等待中书省回传分派方案。`;
+      await refreshSessions();
+      await pollZhongshuPlan(true);
+    }
+
+    async function startDepartment(department, task) {
+      const payload = await launcherFetch("/api/start_department", {
+        method: "POST",
+        body: JSON.stringify({ department, task })
+      });
+      document.getElementById("launcher-status").textContent = `已启动部门终端：${payload.prompt_path}`;
+    }
+
+    async function confirmAssignments() {
+      if (!pendingPlan) {
+        return;
+      }
+      const selected = Array.from(document.querySelectorAll("[data-assignment-index]:checked"))
+        .map((input) => {
+          const index = Number(input.dataset.assignmentIndex);
+          const select = document.querySelector(`[data-model-index="${index}"]`);
+          const taskInput = document.querySelector(`[data-task-index="${index}"]`);
+          return {
+            ...pendingPlan.assignments[index],
+            model: select ? select.value : pendingPlan.assignments[index].model,
+            task: taskInput ? normalizeTaskInput(taskInput.value) : pendingPlan.assignments[index].task
+          };
+        });
+      if (!selected.length) {
+        document.getElementById("launcher-status").textContent = "未选择部门，未启动。";
+        return;
+      }
+      const payload = await launcherFetch("/api/start_assignments", {
+        method: "POST",
+        body: JSON.stringify({ parent_session_id: pendingPlan.session_id || pendingPlanSessionId, assignments: selected })
+      });
+      hideAssignmentModal();
+      pendingPlanSessionId = pendingPlan.session_id || pendingPlanSessionId;
+      pendingPlan = null;
+      document.getElementById("launcher-status").textContent =
+        `已启动 ${payload.started.length} 个 Codex 终端，${payload.queued_count || 0} 个已排队，当前活跃 ${payload.active}。`;
+      await refreshSessions();
+    }
+
+    async function copyText(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+        document.getElementById("launcher-status").textContent = `已复制：${text}`;
+      } catch (error) {
+        document.getElementById("launcher-status").textContent = "复制失败，请手动复制命令。";
+      }
+    }
+
+    document.addEventListener("click", (event) => {
+      const copyButton = event.target.closest("[data-copy]");
+      if (copyButton) {
+        copyText(copyButton.dataset.copy);
+        return;
+      }
+
+      const tab = event.target.closest(".tab");
+      if (tab) {
+        setMode(tab.dataset.mode);
+        refreshReport().catch(() => {});
+        return;
+      }
+
+      const departmentButton = event.target.closest("[data-start-department]");
+      if (departmentButton) {
+        startDepartment(departmentButton.dataset.startDepartment, departmentButton.dataset.task)
+          .catch((error) => {
+            document.getElementById("launcher-status").textContent = `启动失败：${error.message}`;
+          });
+        return;
+      }
+
+      const restartButton = event.target.closest("[data-restart-zhongshu]");
+      if (restartButton) {
+        restartZhongshu(restartButton.dataset.restartZhongshu)
+          .catch((error) => {
+            document.getElementById("launcher-status").textContent = `恢复失败：${error.message}`;
+          });
+      }
+    });
+
+    document.getElementById("refresh-report").addEventListener("click", () => {
+      refreshReport().catch((error) => {
+        document.getElementById("launcher-status").textContent = `刷新失败：${error.message}`;
+      });
+    });
+
+    document.getElementById("refresh-sessions").addEventListener("click", () => {
+      refreshSessions().catch((error) => {
+        document.getElementById("launcher-status").textContent = `刷新终端失败：${error.message}`;
+      });
+    });
+
+    document.getElementById("start-zhongshu").addEventListener("click", () => {
+      startZhongshu().catch((error) => {
+        document.getElementById("launcher-status").textContent = `启动失败：${error.message}`;
+      });
+    });
+
+    document.getElementById("cancel-assignments").addEventListener("click", () => {
+      hideAssignmentModal();
+      document.getElementById("launcher-status").textContent = "已取消启动。";
+    });
+
+    document.getElementById("confirm-assignments").addEventListener("click", () => {
+      confirmAssignments().catch((error) => {
+        document.getElementById("launcher-status").textContent = `启动失败：${error.message}`;
+      });
+    });
+
+    async function pollZhongshuPlan(immediate = false) {
+      if (!pendingPlanSessionId) {
+        return;
+      }
+      if (planPollTimer) {
+        clearTimeout(planPollTimer);
+        planPollTimer = null;
+      }
+      const run = async () => {
+        try {
+          const payload = await launcherFetch(`/api/zhongshu_plan?id=${encodeURIComponent(pendingPlanSessionId)}`);
+          if (payload.plan && payload.plan.ready) {
+            showAssignmentModal(payload.plan);
+            document.getElementById("launcher-status").textContent = `中书省已回传分派方案：${pendingPlanSessionId}。请确认启动。`;
+            return;
+          }
+          document.getElementById("launcher-status").textContent = `中书省会话 ${pendingPlanSessionId} 正在生成分派方案。`;
+          planPollTimer = setTimeout(() => {
+            pollZhongshuPlan(false).catch(() => {});
+          }, 3000);
+        } catch (error) {
+          document.getElementById("launcher-status").textContent = `获取中书省分派方案失败：${error.message}`;
+        }
+      };
+      if (immediate) {
+        await run();
+      } else {
+        planPollTimer = setTimeout(() => {
+          run().catch(() => {});
+        }, 3000);
+      }
+    }
+
+    async function restartZhongshu(sessionId) {
+      const payload = await launcherFetch("/api/restart_zhongshu_session", {
+        method: "POST",
+        body: JSON.stringify({ session_id: sessionId, model: preferredZhongshuModel() })
+      });
+      pendingPlanSessionId = payload.session.id;
+      pendingPlan = null;
+      document.getElementById("launcher-status").textContent =
+        `已恢复中书省会话：${payload.session.id}（来源 ${sessionId}）。等待中书省继续处理。`;
+      await refreshSessions();
+      await pollZhongshuPlan(true);
+    }
+
+    renderReport(emptyReport);
+    renderSessions([]);
+    setMode("worktree");
+    checkLauncher().then(() => refreshReport()).catch(() => {});
+    setInterval(() => {
+      if (launcherReady) {
+        refreshSessions().catch(() => {});
+      }
+    }, 3000);
+  </script>
+</body>
+</html>
