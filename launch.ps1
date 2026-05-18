@@ -16,6 +16,13 @@ $Dashboard = Join-Path $ScriptDir "dashboard.html"
 
 Set-Location $RepoRoot
 
+$env:CODEX_GOVERNANCE_PROJECT_NAME = "E:\See-you-more-than-her"
+$env:CODEX_GOVERNANCE_WORKFLOW_DOC = "AGENTS.md"
+$env:CODEX_GOVERNANCE_MODELS = "gpt-5.5,gpt-5.4"
+$env:CODEX_GOVERNANCE_ZHONGSHU_MODEL = "gpt-5.5"
+$env:CODEX_GOVERNANCE_DEPARTMENT_MODEL = "gpt-5.4"
+$env:CODEX_GOVERNANCE_MAX_DEPARTMENTS = "2"
+
 function Stop-OldGovernanceProcess {
     $launcherPattern = "tools[\\/]+codex_governance[\\/]+codex_launcher\.py"
     $launchScriptPattern = "tools[\\/]+codex_governance[\\/]+launch\.ps1"

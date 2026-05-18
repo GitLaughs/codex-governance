@@ -29,6 +29,7 @@ def default_repo_root() -> Path:
 REPO_ROOT = default_repo_root()
 PROMPT_DIR = REPO_ROOT / ".tmp" / "codex_governance_prompts"
 MAILBOX_ROOT = REPO_ROOT / ".tmp" / "codex_governance_mailbox"
+SESSION_LOG_DIR = REPO_ROOT / ".tmp" / "codex_governance_logs"
 RUNNER = SCRIPT_DIR / "run_codex_prompt.py"
 MAX_CODEX_TERMINALS = int(os.environ.get("CODEX_GOVERNANCE_MAX_DEPARTMENTS", "2"))
 API_VERSION = 3
@@ -49,8 +50,10 @@ SESSION_KIND_ZHONGSHU = "zhongshu"
 SESSION_KIND_DEPARTMENT = "department"
 LAUNCHER_BASE_URL = os.environ.get("CODEX_GOVERNANCE_LAUNCHER_URL", "http://127.0.0.1:6211")
 PROJECT_NAME = os.environ.get("CODEX_GOVERNANCE_PROJECT_NAME", REPO_ROOT.name)
-WORKFLOW_DOC = os.environ.get("CODEX_GOVERNANCE_WORKFLOW_DOC", "Codex governance workflow")
+WORKFLOW_DOC = os.environ.get("CODEX_GOVERNANCE_WORKFLOW_DOC", "AGENTS.md")
 ALLOW_ORIGIN = os.environ.get("CODEX_GOVERNANCE_ALLOW_ORIGIN", "*")
+DEPARTMENT_OBSERVATION_WAIT_MINUTES = int(os.environ.get("CODEX_GOVERNANCE_DEPARTMENT_OBSERVATION_WAIT_MINUTES", "10"))
+DEPARTMENT_OBSERVATION_CHECK_SECONDS = int(os.environ.get("CODEX_GOVERNANCE_DEPARTMENT_OBSERVATION_CHECK_SECONDS", "90"))
 
 DEPARTMENT_PROMPTS = {
     "menxia": ("门下省", "风险复核、边界检查、必要时驳回"),
@@ -58,6 +61,24 @@ DEPARTMENT_PROMPTS = {
     "gongchengbu": ("工程部", "launcher、前端、脚本、验证、回归、发布链路"),
     "lingyubu": ("领域部", "领域实现、业务代码、集成联调"),
 }
+
+DEPARTMENT_REPORT_POLICY = (
+    "部门回传不等于部门结束；下属部门可在写入 mailbox 后继续补证据或修正文档事实。"
+    f"中书省不得因收到一次回传就终止运行中的下属部门；至少保留 {DEPARTMENT_OBSERVATION_WAIT_MINUTES} 分钟观察窗，"
+    f"每 {DEPARTMENT_OBSERVATION_CHECK_SECONDS // 60 or 1}-{max(2, DEPARTMENT_OBSERVATION_CHECK_SECONDS // 60 + 1)} 分钟检查一次 inbox/终端；"
+    "只有观察窗内终端无新输出、会话退出或明确报错时，才终止或重派。"
+)
+
+EFFICIENT_EXECUTION_POLICY = (
+    "原则：大胆推进；只读必要文件；小改跑相关检查，中高风险/公共接口才扩大验证；"
+    "遇明确失败、破坏性操作、越权文件或高风险合约问题才暂停上报。"
+)
+
+ZHONGSHU_CONTINUATION_POLICY = (
+    "续派：部门回传非最终；含 next_action/风险/TODO/未实现/还需要 时，继续推进或回传 report_zhongshu_plan。"
+    "并发未满且可并行时，续派 1-2 个最有价值部门，勿闲置空位；中书省只做小判断和最终汇总。"
+    f"{DEPARTMENT_REPORT_POLICY}"
+)
 
 
 def ps_quote(value: str) -> str:
@@ -70,12 +91,11 @@ def normalize_task_text(task: str) -> str:
     return normalized.strip()
 
 
-def context_doc_instruction(*, include_related_docs: bool) -> str:
-    optional_docs = ["AGENTS.md"]
-    if WORKFLOW_DOC and WORKFLOW_DOC not in {"README.md", "AGENTS.md"}:
-        optional_docs.append(WORKFLOW_DOC)
-    related_docs = " 和相关目录文档" if include_related_docs else ""
-    return f"先读取 README.md；如存在 {'、'.join(optional_docs)}{related_docs}，也一并读取"
+def clipped_text(value: object, limit: int = 240) -> str:
+    text = normalize_task_text(str(value))
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
 
 
 def write_prompt(prefix: str, prompt: str) -> Path:
@@ -84,6 +104,26 @@ def write_prompt(prefix: str, prompt: str) -> Path:
     path = PROMPT_DIR / f"{stamp}-{prefix}.txt"
     path.write_text(prompt, encoding="utf-8")
     return path
+
+
+def write_session_log_path(session_id: str, prefix: str) -> Path:
+    SESSION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    safe_session_id = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in session_id)
+    safe_prefix = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in prefix)
+    return SESSION_LOG_DIR / f"{safe_session_id}-{safe_prefix}.log"
+
+
+def tail_text_file(path_value: object, max_lines: int = 80) -> list[str]:
+    path_text = str(path_value or "").strip()
+    if not path_text:
+        return []
+    path = Path(path_text)
+    if not path.exists() or not path.is_file():
+        return []
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()[-max_lines:]
+    except OSError:
+        return []
 
 
 def prune_processes() -> None:
@@ -98,8 +138,25 @@ def new_session_id(prefix: str) -> str:
     return f"{prefix}-{time.time_ns()}"
 
 
-def session_public(session: dict) -> dict:
-    return {key: value for key, value in session.items() if key != "_process"}
+def transcript_preview_text(lines: list[str], limit: int = 6) -> str:
+    compact = [str(line) for line in lines if str(line).strip()]
+    if len(compact) <= limit:
+        return "\n".join(compact)
+    return "\n".join(["..."] + compact[-limit:])
+
+
+def session_public(session: dict, *, include_preview: bool = True) -> dict:
+    public = {key: value for key, value in session.items() if key != "_process"}
+    if include_preview:
+        session_id = str(session.get("id", "")).strip()
+        if session_id:
+            try:
+                public["transcript_preview"] = transcript_preview_text(session_transcript_lines(session_id))
+            except ValueError:
+                public["transcript_preview"] = ""
+        else:
+            public["transcript_preview"] = ""
+    return public
 
 
 def zhongshu_context_snapshot(session_id: str) -> dict:
@@ -166,15 +223,6 @@ def write_mailbox_item(zhongshu_session_id: str, department: str, payload: dict)
     return path
 
 
-def write_archive_item(zhongshu_session_id: str, department: str, payload: dict) -> Path:
-    paths = mailbox_paths(zhongshu_session_id)
-    ensure_zhongshu_mailbox(zhongshu_session_id)
-    filename = f"{time.strftime('%Y%m%d-%H%M%S')}-{department}-{time.time_ns()}.json"
-    path = paths["archive"] / filename
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
-
-
 def refresh_sessions() -> None:
     prune_processes()
     for session in SESSIONS:
@@ -235,20 +283,25 @@ def close_session_process(session_id: str) -> bool:
     return True
 
 
-def send_prompt_to_window(window_title: str, prompt: str) -> tuple[bool, str]:
+def send_prompt_to_window(window_title: str, prompt: str, process_id: int | None = None) -> tuple[bool, str]:
     text = normalize_task_text(prompt)
     if not text:
         return False, "prompt is empty"
+    target_pid = int(process_id or 0)
     script = (
         "Add-Type -AssemblyName System.Windows.Forms; "
         "$ws = New-Object -ComObject WScript.Shell; "
         "$title = " + ps_quote(window_title) + "; "
+        f"$targetPid = {target_pid}; "
         "$text = " + ps_quote(text) + "; "
         "$hadText = [System.Windows.Forms.Clipboard]::ContainsText(); "
         "$backup = if ($hadText) { [System.Windows.Forms.Clipboard]::GetText() } else { $null }; "
         "try { "
         "  [System.Windows.Forms.Clipboard]::SetText($text); "
-        "  if (-not $ws.AppActivate($title)) { throw 'window not found'; } "
+        "  $activated = $false; "
+        "  if ($targetPid -gt 0) { $activated = $ws.AppActivate($targetPid); } "
+        "  if (-not $activated -and $title) { $activated = $ws.AppActivate($title); } "
+        "  if (-not $activated) { throw \"window not found: $title pid=$targetPid\"; } "
         "  Start-Sleep -Milliseconds 250; "
         "  $ws.SendKeys('^v'); "
         "  Start-Sleep -Milliseconds 120; "
@@ -283,21 +336,22 @@ def build_zhongshu_result_prompt(parent_session_id: str, result: dict) -> str:
     completed = [item for item in children if item.get("status") != "running"]
     running = [item for item in children if item.get("status") == "running"]
     queued = [item for item in queue_snapshot() if item.get("parent_session_id") == parent_session_id]
-    summary = normalize_task_text(str(result.get("summary", "")).strip()) or "无摘要"
-    next_action = normalize_task_text(str(result.get("next_action", "")).strip())
+    summary = clipped_text(result.get("summary", ""), 220) or "无摘要"
+    next_action = clipped_text(result.get("next_action", ""), 220)
     risks = result.get("risks", [])
-    risk_text = "；".join(normalize_task_text(str(item)) for item in risks[:4]) or "无新增风险"
+    risk_text = "；".join(clipped_text(item, 160) for item in risks[:3]) or "无新增风险"
     suffix = (
         f"建议下一步：{next_action}。"
         if next_action
         else "若三部和门下省都已完成且无需续派，请直接汇总当前结果给用户。"
     )
     return (
-        f"收到新的下属部门回传，不要等待用户转述。"
-        f"本次回传部门：{result.get('department', 'unknown')}。摘要：{summary}。"
+        f"收到部门回传。"
+        f"{ZHONGSHU_CONTINUATION_POLICY}"
+        f"部门：{result.get('department', 'unknown')}。摘要：{summary}。"
         f"风险：{risk_text}。"
-        f"当前状态：已完成 {len(completed)} 个，运行中 {len(running)} 个，排队 {len(queued)} 个。"
-        f"请立即读取 {LAUNCHER_BASE_URL}/api/zhongshu_inbox?id={parent_session_id}&peek=1，结合当前任务继续监察、续派或汇总。"
+        f"状态：完成 {len(completed)}，运行 {len(running)}，排队 {len(queued)}。"
+        f"读完整结果：{LAUNCHER_BASE_URL}/api/zhongshu_inbox?id={parent_session_id}&peek=1；然后续派或汇总。"
         f"{suffix}"
     )
 
@@ -311,12 +365,40 @@ def auto_notify_zhongshu(parent_session_id: str, result: dict) -> dict:
         session["auto_notification_at"] = now_text()
         return {"ok": False, "status": "skipped", "error": message}
     prompt = build_zhongshu_result_prompt(parent_session_id, result)
-    ok, error = send_prompt_to_window(str(session.get("window_title", "")), prompt)
+    ok, error = send_prompt_to_window(str(session.get("window_title", "")), prompt, session.get("pid"))
     session["auto_notification_status"] = "sent" if ok else "error"
     session["auto_notification_error"] = error if not ok else ""
     session["auto_notification_at"] = now_text()
     session["last_auto_notification_prompt"] = prompt
-    return {"ok": ok, "status": session["auto_notification_status"], "error": error, "prompt": prompt}
+    if ok:
+        return {"ok": True, "status": "sent", "error": "", "prompt": prompt}
+
+    try:
+        fallback = start_codex_terminal(
+            prompt,
+            "zhongshu_notify",
+            "中书省通知",
+            str(session.get("model", ZHONGSHU_MODEL)),
+            session_kind=SESSION_KIND_ZHONGSHU,
+        )
+    except (OSError, ValueError) as exc:
+        session["auto_notification_status"] = "error"
+        session["auto_notification_fallback_error"] = str(exc)
+        return {"ok": False, "status": "error", "error": error, "fallback_error": str(exc), "prompt": prompt}
+
+    fallback_session = get_session(fallback["session"]["id"], SESSION_KIND_ZHONGSHU)
+    if fallback_session is not None:
+        fallback_session["notification_for_session_id"] = parent_session_id
+        fallback_session["notification_for_report_id"] = result.get("id")
+    session["auto_notification_status"] = "fallback_started"
+    session["auto_notification_fallback_session_id"] = fallback["session"]["id"]
+    return {
+        "ok": True,
+        "status": "fallback_started",
+        "error": error,
+        "fallback_session": session_public(fallback["session"]),
+        "prompt": prompt,
+    }
 
 
 def require_zhongshu_session(session_id: str, active_only: bool = False) -> dict:
@@ -399,17 +481,19 @@ def normalize_plan_assignment(assignment: dict) -> dict:
 
 def register_zhongshu_plan(parent_session_id: str, payload: dict, *, source: str) -> dict:
     session = require_zhongshu_session(parent_session_id, active_only=False)
-    assignments = payload.get("assignments", [])
+    nested_plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+    assignments = payload.get("assignments", nested_plan.get("assignments", []))
     if not isinstance(assignments, list):
         raise ValueError("assignments must be a list")
     normalized_assignments = [normalize_plan_assignment(item) for item in assignments]
+    requested_confirmation = payload.get("needs_confirmation", nested_plan.get("needs_confirmation", True))
     plan = {
         "session_id": parent_session_id,
-        "summary": str(payload.get("summary", "")).strip() or "中书省已生成分派方案。",
+        "summary": str(payload.get("summary", nested_plan.get("summary", ""))).strip() or "中书省已生成分派方案。",
         "reported_at": payload.get("reported_at", now_text()),
         "source": source,
         "ready": True,
-        "needs_confirmation": True,
+        "needs_confirmation": bool(normalized_assignments) and bool(requested_confirmation),
         "assignments": normalized_assignments,
         "active_department_sessions": active_department_count(),
         "max_department_sessions": MAX_CODEX_TERMINALS,
@@ -475,6 +559,21 @@ def register_result(
     reports = REPORTS_BY_ZHONGSHU.setdefault(parent_session_id, [])
     existing = next((item for item in reports if item["report_id"] == result_id), None)
     if existing:
+        if existing.get("source") == "launcher_fallback" and source != "launcher_fallback":
+            existing.update(
+                {
+                    "department_session_id": payload.get("department_session_id"),
+                    "department": payload.get("department", existing.get("department", "unknown")),
+                    "summary": payload.get("summary", existing.get("summary", "")),
+                    "changed_files": payload.get("changed_files", payload.get("files", [])),
+                    "verifications_run": payload.get("verifications_run", payload.get("verification", [])),
+                    "verifications_skipped": payload.get("verifications_skipped", []),
+                    "risks": payload.get("risks", []),
+                    "needs_user_confirmation": bool(payload.get("needs_user_confirmation", False)),
+                    "next_action": payload.get("next_action", ""),
+                    "reported_at": payload.get("reported_at", now_text()),
+                }
+            )
         existing["source"] = source
         if mailbox_file:
             existing["mailbox_file"] = mailbox_file
@@ -510,7 +609,8 @@ def register_result(
             department_session["report_status"] = "reported"
             department_session["reported_at"] = result["reported_at"]
             department_session["last_report_id"] = result_id
-            department_session["auto_closed"] = close_session_process(department_session_id)
+            department_session["auto_closed"] = False
+            department_session["auto_close_reason"] = "report_received_but_session_preserved"
     notification = auto_notify_zhongshu(parent_session_id, result)
     result["auto_notification"] = notification
     return result
@@ -537,9 +637,47 @@ def collect_mailbox_results(zhongshu_session_id: str) -> list[dict]:
     return collected
 
 
+def synthesize_missing_department_reports() -> list[dict]:
+    refresh_sessions()
+    synthesized = []
+    for session in list(SESSIONS):
+        if session.get("session_kind") != SESSION_KIND_DEPARTMENT:
+            continue
+        if session.get("status") != "exited" or session.get("report_status") == "reported":
+            continue
+        parent_session_id = str(session.get("parent_session_id", "")).strip()
+        if not parent_session_id:
+            continue
+        collect_mailbox_results(parent_session_id)
+        if session.get("report_status") == "reported":
+            continue
+        payload = {
+            "department_session_id": session["id"],
+            "department": session.get("department", "unknown"),
+            "summary": "部门会话已退出，但未写入 mailbox 回传；launcher 已自动登记兜底结果。",
+            "changed_files": [],
+            "verification": [],
+            "verifications_skipped": ["部门未回传验证明细。"],
+            "risks": ["部门进程退出时缺少正式回传；需要中书省结合会话输出判断是否继续追问或重派。"],
+            "needs_user_confirmation": False,
+            "next_action": "读取该部门终端输出；若结果不完整，按原任务重派最小范围部门。",
+            "reported_at": session.get("ended_at") or now_text(),
+        }
+        synthesized.append(
+            register_result(
+                parent_session_id,
+                payload,
+                source="launcher_fallback",
+                mark_unread=True,
+            )
+        )
+    return synthesized
+
+
 def zhongshu_inbox_payload(session_id: str, *, mark_read: bool) -> dict:
     session = require_zhongshu_session(session_id, active_only=False)
     collect_mailbox_results(session_id)
+    synthesize_missing_department_reports()
     reports = [result_public(item) for item in REPORTS_BY_ZHONGSHU.get(session_id, [])]
     unread = [item for item in reports if not item.get("read")]
     read = [item for item in reports if item.get("read")]
@@ -563,7 +701,7 @@ def zhongshu_inbox_payload(session_id: str, *, mark_read: bool) -> dict:
     queued_departments = [item for item in queue_snapshot() if item.get("parent_session_id") == session_id]
     return {
         "ok": True,
-        "session": session_public(session),
+        "session": session_public(session, include_preview=False),
         "unread_results": response_unread,
         "read_results": response_read,
         "running_departments": running_departments,
@@ -588,6 +726,88 @@ def session_snapshot() -> list[dict]:
     return [session_public(session) for session in SESSIONS]
 
 
+def session_transcript_lines(session_id: str) -> list[str]:
+    session = get_session(session_id)
+    if session is None:
+        raise ValueError(f"unknown session: {session_id}")
+    lines = [
+        f"session: {session.get('title', session_id)}",
+        f"id: {session_id}",
+        f"role: {session.get('session_kind', 'unknown')}",
+        f"status: {session.get('status', 'unknown')}",
+        f"model: {session.get('model', 'unknown model')}",
+        f"pid: {session.get('pid', '-')}",
+        f"started: {session.get('started_at', '-')}",
+    ]
+    if session.get("ended_at"):
+        lines.append(f"ended: {session['ended_at']}")
+    if session.get("parent_session_id"):
+        lines.append(f"parent: {session['parent_session_id']}")
+    if session.get("prompt_path"):
+        lines.append(f"prompt: {session['prompt_path']}")
+
+    lines.append("")
+    if session.get("session_kind") == SESSION_KIND_ZHONGSHU:
+        inbox = zhongshu_inbox_payload(session_id, mark_read=False)
+        lines.append(f"unread: {inbox.get('unread_count', 0)}")
+        children = inbox.get("running_departments", []) + inbox.get("completed_departments", [])
+        lines.append(f"departments: {len(children)}")
+        for child in children[:12]:
+            lines.append(
+                f"  - {child.get('title', child.get('id', '-'))} / "
+                f"{child.get('status', 'unknown')} / report {child.get('report_status', 'pending')}"
+            )
+        for result in (inbox.get("unread_results", []) + inbox.get("read_results", []))[:8]:
+            lines.append(f"result: {result.get('department', 'unknown')} / {clipped_text(result.get('summary', ''), 180)}")
+    else:
+        lines.append(f"report: {session.get('report_status', 'n/a')}")
+        lines.append(f"reported: {session.get('reported_at') or '-'}")
+
+    output_tail = tail_text_file(session.get("log_path"), max_lines=80)
+    if output_tail:
+        lines.append("")
+        lines.append("terminal output tail:")
+        lines.extend(output_tail)
+
+    history = session.get("input_history", [])
+    if history:
+        lines.append("")
+        lines.append("input history:")
+        for item in history[-8:]:
+            lines.append(f"  [{item.get('sent_at', '-')}] {item.get('text', '')}")
+    return lines
+
+
+def session_stream_event(session_id: str) -> dict:
+    session = get_session(session_id)
+    if session is None:
+        raise ValueError(f"unknown session: {session_id}")
+    lines = session_transcript_lines(session_id)
+    return {
+        "ok": True,
+        "session": session_public(session),
+        "input_enabled": session.get("status") == "running",
+        "transcript": "\n".join(lines),
+    }
+
+
+def send_session_input(session_id: str, text: str) -> dict:
+    session = get_session(session_id)
+    if session is None:
+        raise ValueError(f"unknown session: {session_id}")
+    normalized = normalize_task_text(text)
+    if not normalized:
+        raise ValueError("input is required")
+    if session.get("status") != "running":
+        raise ValueError(f"session is not running: {session_id}")
+    ok, error = send_prompt_to_window(str(session.get("window_title", "")), normalized, session.get("pid"))
+    history = session.setdefault("input_history", [])
+    history.append({"text": normalized, "sent_at": now_text(), "ok": ok, "error": error})
+    if not ok:
+        raise ValueError(error or "failed to send input")
+    return {"ok": True, "session_id": session_id, "sent_at": history[-1]["sent_at"]}
+
+
 def start_codex_terminal(
     prompt: str,
     prefix: str,
@@ -608,6 +828,7 @@ def start_codex_terminal(
     elif parent_session_id:
         mailbox = ensure_zhongshu_mailbox(parent_session_id)
     prompt_path = write_prompt(prefix, prompt)
+    log_path = write_session_log_path(resolved_session_id, prefix)
     repo = str(REPO_ROOT)
     window_title = f"Codex {title or prefix} [{selected_model}]"
     script = (
@@ -617,6 +838,7 @@ def start_codex_terminal(
         f"--model {ps_quote(selected_model)} "
         f"--repo {ps_quote(repo)} "
         f"--prompt-file {ps_quote(str(prompt_path))} "
+        f"--log-file {ps_quote(str(log_path))} "
         f"--title {ps_quote(window_title)}"
     )
     process = subprocess.Popen(
@@ -640,6 +862,7 @@ def start_codex_terminal(
         "pid": process.pid,
         "model": selected_model,
         "prompt_path": str(prompt_path),
+        "log_path": str(log_path),
         "window_title": window_title,
         "status": "running",
         "started_at": now_text(),
@@ -715,10 +938,11 @@ def build_zhongshu_resume_prompt(snapshot: dict, launcher_url: str, session_id: 
     ) or "暂无下挂部门"
     plan_summary = normalize_task_text(plan.get("summary", "暂无分派方案"))
     return (
-        f"你是 {PROJECT_NAME} 的中书省。恢复之前中断的任务：{task}。不要要求用户重述任务。"
-        f"上一次分派方案：{plan_summary}。当前下挂部门状态：{child_summary}。最近回传摘要：{report_summary}。"
-        f"继续{context_doc_instruction(include_related_docs=True)}，必要时再运行治理报告脚本。"
-        f"如果还需要前端确认新的分派方案，就回传到 {launcher_url}/api/report_zhongshu_plan（session_id={session_id}）；否则继续监察部门执行和结果回传，收取结果只用 {launcher_url}/api/zhongshu_inbox?id={session_id}。"
+        f"你是 {PROJECT_NAME} 的中书省。恢复任务：{task}。"
+        f"{EFFICIENT_EXECUTION_POLICY}"
+        f"{ZHONGSHU_CONTINUATION_POLICY}"
+        f"方案：{plan_summary}。部门：{child_summary}。回传：{report_summary}。"
+        f"只读 AGENTS.md 和必要文件。需新分派就 POST {launcher_url}/api/report_zhongshu_plan session_id={session_id}；收件箱 {launcher_url}/api/zhongshu_inbox?id={session_id}。"
     )
 
 
@@ -726,6 +950,22 @@ def restart_zhongshu_session(session_id: str, model: str | None = None) -> dict:
     snapshot = zhongshu_context_snapshot(session_id)
     old_session = require_zhongshu_session(session_id, active_only=False)
     task = normalize_task_text(snapshot.get("task", "") or old_session.get("task", "继续之前的中书省任务"))
+    if old_session.get("status") == "running":
+        prompt = build_zhongshu_resume_prompt(snapshot, LAUNCHER_BASE_URL, session_id)
+        ok, error = send_prompt_to_window(str(old_session.get("window_title", "")), prompt, old_session.get("pid"))
+        old_session["last_resume_prompt"] = prompt
+        old_session["last_resume_at"] = now_text()
+        old_session["last_resume_status"] = "sent" if ok else "error"
+        old_session["last_resume_error"] = error if not ok else ""
+        if not ok:
+            raise ValueError(f"failed to send resume prompt to running zhongshu session: {error}")
+        return {
+            "ok": True,
+            "resumed_inline": True,
+            "source_session_id": session_id,
+            "session": session_public(old_session),
+        }
+
     new_session_id_value = new_session_id("zhongshu")
     PLANS_BY_ZHONGSHU[new_session_id_value] = snapshot.get("plan", {}) or {
         "session_id": new_session_id_value,
@@ -825,18 +1065,20 @@ def pump_assignment_queue() -> list[dict]:
 
 def queue_worker() -> None:
     while True:
-        time.sleep(2)
+        time.sleep(DEPARTMENT_OBSERVATION_CHECK_SECONDS)
         with STATE_LOCK:
+            synthesize_missing_department_reports()
             pump_assignment_queue()
 
 
 def build_zhongshu_prompt(task: str, launcher_url: str, session_id: str) -> str:
     return (
-        f"你是 {PROJECT_NAME} 的中书省。正式任务：{task}。不要要求用户重述任务。"
-        f"{context_doc_instruction(include_related_docs=True)}，再运行治理报告脚本。"
-        f"第一阶段只生成结构化分派方案并回传到 {launcher_url}/api/report_zhongshu_plan（session_id={session_id}），不要直接启动下属部门。"
-        f"等前端确认后，再继续监察三部执行和结果回传；收取部门结果只用 {launcher_url}/api/zhongshu_inbox?id={session_id}。"
-        f"如果下属部门出现 exceeded retry limit、429 Too Many Requests 或 request limit 报错，不要立刻拉满重试；先等待一段时间，再按原部门任务重试，并优先保持低并发。"
+        f"你是 {PROJECT_NAME} 的中书省。任务：{task}。"
+        f"{EFFICIENT_EXECUTION_POLICY}"
+        f"{ZHONGSHU_CONTINUATION_POLICY}"
+        f"先读 AGENTS.md；必要时跑一次治理报告。生成精简分派 POST {launcher_url}/api/report_zhongshu_plan session_id={session_id}。"
+        f"合理使用最多 2 个部门空位：可拆成实现/验证/文档/复核两块时同时派两个；只有一个可执行块才派一个。"
+        f"确认后监察回传；收件箱 {launcher_url}/api/zhongshu_inbox?id={session_id}。遇 429/request limit：等待后低并发重试。"
     )
 
 
@@ -850,11 +1092,16 @@ def build_department_prompt(
     title, duty = DEPARTMENT_PROMPTS[department]
     mailbox = ensure_zhongshu_mailbox(parent_session_id)
     return (
-        f"你是 {PROJECT_NAME} 的{title}。正式任务：{task}。不要要求用户重述任务。职责：{duty}。"
-        f"{context_doc_instruction(include_related_docs=False)}；再读取与你职责相关的文件，执行前先看 git status --short。"
-        f"只处理本部门职责范围内文件，不要回滚用户或其他终端改动。完成后运行治理报告脚本。"
-        f"然后优先把结果 POST 到 {launcher_url}/api/report_result，并带 parent_session_id={parent_session_id}、department_session_id={department_session_id}、department={department}；"
-        f"若 HTTP 失败，再把同结构 JSON 写入 {mailbox['incoming']}。最终说明已改文件、已跑验证、未跑验证和剩余风险。"
+        f"你是 {PROJECT_NAME} 的{title}。职责：{duty}。任务：{task}。"
+        f"{EFFICIENT_EXECUTION_POLICY}"
+        f"{DEPARTMENT_REPORT_POLICY}"
+        f"先看 AGENTS.md 和 git status --short；只改职责内文件，不回滚他人改动。完成后跑最相关验证。"
+        f"回传只写 mailbox JSON。模板："
+        f"$payload=[ordered]@{{parent_session_id='{parent_session_id}';department_session_id='{department_session_id}';department='{department}';summary='填写摘要';changed_files=@();verification=@();risks=@();next_action=''}};"
+        f"$json=$payload|ConvertTo-Json -Depth 8;"
+        f"$path=Join-Path '{mailbox['incoming']}' (\"report-$(Get-Date -Format yyyyMMdd-HHmmss)-{department}.json\");"
+        f"[System.IO.File]::WriteAllText($path,$json,[System.Text.UTF8Encoding]::new($false))。"
+        f"最终说明 mailbox 路径、改动、验证、风险。"
     )
 
 
@@ -875,9 +1122,9 @@ def build_menxia_task(user_task: str, report: dict) -> str:
     risks = "；".join(f"[{risk['level']}] {risk['path']}: {risk['message']}" for risk in report["risks"]) or "未命中风险规则，但需抽查路径边界。"
     return (
         f"用户总任务：{normalize_task_text(user_task)}。"
-        f"中书省判定当前存在需要门下省复核的风险。"
+        f"需要门下省复核。"
         f"复核重点：{risks}。"
-        f"要求：只做风险复核和驳回建议，不直接修改业务文件，输出可执行的放行/驳回意见。"
+        f"只查影响结论的证据，给放行/驳回意见；不改业务文件。"
     )
 
 
@@ -960,6 +1207,8 @@ def build_status_payload(*, include_session_lists: bool = True) -> dict:
         "ok": True,
         "api_version": API_VERSION,
         "repo": str(REPO_ROOT),
+        "project_name": PROJECT_NAME,
+        "workflow_doc": WORKFLOW_DOC,
         "departments": DEPARTMENT_PROMPTS,
         "active_terminals": active_department_count(),
         "active_department_sessions": active_department_count(),
@@ -1037,6 +1286,28 @@ class LauncherHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_session_stream(self, session_id: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", ALLOW_ORIGIN)
+        self.end_headers()
+        last_payload = ""
+        for _ in range(3600):
+            try:
+                payload = json.dumps(session_stream_event(session_id), ensure_ascii=False)
+            except ValueError as exc:
+                payload = json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+            if payload != last_payload:
+                try:
+                    self.wfile.write(f"event: session\ndata: {payload}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                last_payload = payload
+            time.sleep(1)
+
     def do_OPTIONS(self) -> None:
         self.send_json({"ok": True})
 
@@ -1048,6 +1319,13 @@ class LauncherHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/sessions":
             self.send_json(build_status_payload())
+            return
+        if parsed.path == "/api/session_stream":
+            session_id = str(query.get("id", [""])[0]).strip()
+            if not session_id:
+                self.send_json({"ok": False, "error": "id is required"}, 400)
+                return
+            self.send_session_stream(session_id)
             return
         if parsed.path == "/api/zhongshu_sessions":
             self.send_json(zhongshu_sessions_payload())
@@ -1109,6 +1387,13 @@ class LauncherHandler(BaseHTTPRequestHandler):
                 self.send_json(restart_zhongshu_session(session_id, model))
                 return
 
+            if parsed.path == "/api/session_input":
+                session_id = str(payload.get("session_id", "")).strip()
+                if not session_id:
+                    raise ValueError("session_id is required")
+                self.send_json(send_session_input(session_id, str(payload.get("input", ""))))
+                return
+
             if parsed.path == "/api/plan_assignments":
                 task = normalize_task_text(str(payload.get("task", "")).strip())
                 if not task:
@@ -1143,35 +1428,6 @@ class LauncherHandler(BaseHTTPRequestHandler):
                 ).strip()
                 normalized = [normalize_assignment(assignment, default_parent_session_id) for assignment in assignments]
                 self.send_json(queue_assignments(normalized))
-                return
-
-            if parsed.path == "/api/report_result":
-                parent_session_id = resolve_parent_session_id(
-                    str(payload.get("parent_session_id", payload.get("zhongshu_session_id", ""))).strip(),
-                    active_only=False,
-                )
-                department = str(payload.get("department", "unknown")).strip() or "unknown"
-                report_payload = dict(payload)
-                report_payload["parent_session_id"] = parent_session_id
-                report_payload["department"] = department
-                report_payload.setdefault("reported_at", now_text())
-                archived_path = write_archive_item(parent_session_id, department, report_payload)
-                result = register_result(
-                    parent_session_id,
-                    report_payload,
-                    source="http",
-                    mailbox_file=str(archived_path),
-                    mark_unread=True,
-                )
-                self.send_json(
-                    {
-                        "ok": True,
-                        "parent_session_id": parent_session_id,
-                        "department": department,
-                        "report": result_public(result),
-                        "archive_file": str(archived_path),
-                    }
-                )
                 return
 
             if parsed.path == "/api/report_zhongshu_plan":

@@ -1,5 +1,5 @@
 version: 1
-name: codex_governance_default
+name: see_you_more_than_her_a1_governance
 
 provinces:
   zhongshu:
@@ -20,55 +20,54 @@ departments:
       - AGENTS.md
       - CLAUDE.md
       - README.md
-      - API.md
-      - CONTRIBUTING.md
-      - INDEPENDENT_RELEASE_PLAN.md
-      - SECURITY.md
-      - RELEASING.md
-      - LICENSE
       - docs/**
-      - "**/README.md"
+      - tools/*/README.md
+      - tools/codex_governance/**
     verify:
       - git status --short
-      - python codex_governance.py
+      - python tools/codex_governance/codex_governance.py
   gongchengbu:
     title: 工程部
     duty: launcher、前端、脚本、验证、回归、发布链路
     globs:
-      - "*.py"
-      - "*.ps1"
-      - "*.html"
-      - "*.yaml"
-      - .gitignore
       - scripts/**
-      - tests/**
-      - "**/tests/**"
-      - tools/**
+      - docker/**
+      - tools/*/launch.ps1
+      - tools/**/tests/**
+      - tools/check_*.py
+      - tools/codex_governance/**
     verify:
-      - python -m py_compile codex_governance.py codex_launcher.py run_codex_prompt.py
-      - python codex_governance.py --json
+      - python -m py_compile tools/aurora/aurora_companion.py tools/aurora/serial_terminal.py tools/aurora/qt_camera_bridge.py tools/PC/pc_tool.py tools/PC/pc_chassis.py tools/A1/a1_tool.py tools/A1/a1_relay.py tools/A1/a1_serial.py
+      - python -m unittest discover tools
   lingyubu:
     title: 领域部
-    duty: 领域实现、业务代码、集成联调
+    duty: 训练、模型、数据、A1_TEST、UART、底盘、板端联调
     globs:
-      - src/**
-      - app/**
-      - packages/**
-      - data/**
+      - dataprocess_modeltrain/**
+      - tools/convert/**
       - models/**
+      - data/A1_SDK_SC132GS/smartsens_sdk/smart_software/src/app_demo/face_detection/ssne_ai_demo/**
+      - tools/A1/**
+      - tools/PC/**
     verify:
-      - git status --short
+      - python tools/convert/generate_a1_datasets.py --help
+      - docker exec A1_Builder bash -lc "bash /app/scripts/build_complete_evb.sh --app-only"
 
 risk_rules:
-  - name: runtime_artifact
+  - name: vendor_sdk
+    level: high
+    pattern: data/A1_SDK_SC132GS/smartsens_sdk/
+    allow_pattern: data/A1_SDK_SC132GS/smartsens_sdk/smart_software/src/app_demo/face_detection/ssne_ai_demo/
+    message: 修改 SDK 非 ssne_ai_demo 区域，需说明原因并缩小改动面
+  - name: output_artifact
     level: high
     pattern: output/
     message: output 是构建产物，不应作为源码或提交对象
-  - name: secret_file
-    level: high
-    pattern: .env
-    message: 疑似环境变量或密钥文件，提交前需确认脱敏
-  - name: vendor_tree
+  - name: external_assets
     level: medium
-    pattern: vendor/
-    message: vendor 目录通常是外部导入，修改前需说明来源和边界
+    pattern: E:/SYMTH_files/
+    message: 外部资产不可写成主仓源码
+  - name: navgrid_contract
+    level: medium
+    pattern: navgrid
+    message: 修改 navgrid 相关内容时需同步 5/12/combined_logits[17] 合约

@@ -43,7 +43,7 @@
 - 工作区治理报告：按路径规则把改动映射到部门职责，并输出风险和建议验证。
 - 本地白名单 launcher：只开放有限 API，不直接给前端任意 shell 执行能力。
 - 中书省先审后发：主代理先提交结构化分派方案，前端确认后再启动执行部门。
-- 部门结果回传：支持 HTTP 主路径与 mailbox 文件兜底，降低本地失败时的数据丢失。
+- 部门结果回传：统一走 mailbox 文件，避免网络回传失败造成数据丢失。
 - 并发与模型策略：中书省常驻，部门有限并发，模型选择可按风险与复杂度调整。
 
 卖点措辞建议：
@@ -51,7 +51,7 @@
 - `local-first multi-agent governance`
 - `reviewable assignment planning`
 - `white-listed launcher API`
-- `fallback mailbox reporting`
+- `mailbox reporting`
 - `human-confirmed department startup`
 
 不要写：
@@ -98,7 +98,7 @@ python run_codex_prompt.py --help
 - 分派方案注册
 - 队列与并发控制
 - 结果归档
-- mailbox 兜底
+- mailbox 收取
 
 ### 表现层
 
@@ -142,7 +142,6 @@ python run_codex_prompt.py --help
 - `/api/restart_zhongshu_session`
 - `/api/start_department`
 - `/api/start_assignments`
-- `/api/report_result`
 - `/api/report_zhongshu_plan`
 
 每个接口应写：

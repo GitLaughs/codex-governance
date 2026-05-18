@@ -4,21 +4,41 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Codex 三省三部治理看板</title>
+  <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css">
   <style>
+    /*
+      Design system pass:
+      - Direction: restrained operations console for repeated monitoring work.
+      - Palette: GitHub-like neutrals with blue command emphasis, green live state, amber caution.
+      - Typography: Microsoft YaHei/Segoe UI for UI text, Consolas for terminal/log content.
+      - Geometry: 6-8px radii, thin borders, layered shadows only around active work surfaces.
+      - Layout rhythm: launcher first, terminal as primary full-width workbench, reports below.
+    */
     :root {
       --color-primary: #0969da;
+      --color-primary-strong: #0757b8;
+      --color-primary-soft: #ddf4ff;
       --color-secondary: #1f883d;
+      --color-secondary-soft: #dafbe1;
       --color-neutral-0: #ffffff;
+      --color-neutral-25: #fbfcfe;
       --color-neutral-50: #f6f8fa;
       --color-neutral-100: #eaeef2;
       --color-neutral-200: #d0d7de;
       --color-neutral-300: #afb8c1;
+      --color-neutral-500: #6e7781;
       --color-neutral-600: #57606a;
       --color-neutral-700: #424a53;
+      --color-neutral-800: #32383f;
       --color-neutral-900: #24292f;
       --color-success: #1a7f37;
       --color-warning: #9a6700;
       --color-error: #cf222e;
+      --terminal-bg: #0b1118;
+      --terminal-panel: #101820;
+      --terminal-line: rgba(208, 215, 222, 0.16);
+      --terminal-text: #d8dee9;
+      --terminal-muted: #8b949e;
       --text-xs: 12px;
       --text-sm: 14px;
       --text-base: 16px;
@@ -35,6 +55,8 @@
       --radius-sm: 6px;
       --radius-md: 8px;
       --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.08);
+      --shadow-2: 0 10px 30px rgba(31, 35, 40, 0.10);
+      --shadow-terminal: 0 18px 50px rgba(1, 4, 9, 0.18);
     }
 
     * {
@@ -43,7 +65,7 @@
 
     body {
       margin: 0;
-      background: var(--color-neutral-50);
+      background: #eef2f6;
       color: var(--color-neutral-900);
       font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
       font-size: var(--text-sm);
@@ -58,9 +80,10 @@
     }
 
     .topbar {
-      background: var(--color-neutral-900);
+      background: #151b23;
       color: var(--color-neutral-0);
-      border-bottom: 1px solid var(--color-neutral-900);
+      border-bottom: 1px solid #0d1117;
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
     }
 
     .topbar-inner {
@@ -90,6 +113,7 @@
       font-size: var(--text-xs);
       font-weight: 600;
       color: var(--color-neutral-0);
+      background: rgba(255, 255, 255, 0.06);
     }
 
     .brand-title {
@@ -125,10 +149,32 @@
       padding: var(--space-2) var(--space-3);
       cursor: pointer;
       min-height: 36px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-2);
+      font-weight: 500;
+      transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 120ms ease;
     }
 
     .button:hover {
       background: var(--color-neutral-50);
+      border-color: var(--color-neutral-300);
+      box-shadow: var(--shadow-1);
+    }
+
+    .button:active {
+      transform: translateY(1px);
+      box-shadow: none;
+    }
+
+    .button:focus-visible,
+    .tab:focus-visible,
+    .session-chip:focus-visible,
+    .task-box:focus-visible,
+    .model-select:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--color-primary), white 35%);
+      outline-offset: 2px;
     }
 
     .button.primary {
@@ -138,7 +184,8 @@
     }
 
     .button.primary:hover {
-      background: #0757b8;
+      background: var(--color-primary-strong);
+      border-color: var(--color-primary-strong);
     }
 
     .button.dark {
@@ -152,7 +199,7 @@
     }
 
     .page {
-      max-width: 1440px;
+      max-width: 1520px;
       margin: 0 auto;
       padding: var(--space-6);
     }
@@ -211,6 +258,26 @@
       color: var(--color-warning);
     }
 
+    .terminal-preview {
+      margin: var(--space-2) 0 0;
+      padding: var(--space-2) var(--space-3);
+      border: 1px solid #d8dee4;
+      border-radius: var(--radius-sm);
+      background: #f0f3f6;
+      color: #3b434b;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: var(--text-xs);
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    }
+
+    .terminal-preview.compact {
+      max-height: 132px;
+      overflow: auto;
+    }
+
     .tabs {
       display: flex;
       gap: var(--space-1);
@@ -256,6 +323,7 @@
       align-items: center;
       justify-content: space-between;
       gap: var(--space-3);
+      background: var(--color-neutral-25);
     }
 
     .panel-title {
@@ -457,6 +525,17 @@
       color: var(--color-neutral-900);
       font-size: var(--text-sm);
       line-height: 1.5;
+      transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+    }
+
+    .task-box:hover {
+      border-color: var(--color-neutral-300);
+    }
+
+    .task-box:focus {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary), transparent 82%);
+      background: var(--color-neutral-25);
     }
 
     .model-select {
@@ -478,15 +557,43 @@
 
     .launcher-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: var(--space-3);
-      align-items: end;
+      grid-template-columns: minmax(0, 1fr) minmax(168px, auto);
+      gap: var(--space-4);
+      align-items: stretch;
     }
 
     .launcher-actions {
       display: flex;
       flex-direction: column;
       gap: var(--space-2);
+      justify-content: flex-end;
+    }
+
+    .launcher-terminal-stage {
+      width: min(100%, 1220px);
+      margin: var(--space-6) auto 0;
+      display: grid;
+      gap: var(--space-4);
+      justify-items: center;
+    }
+
+    .launcher-terminal-shell {
+      width: min(100%, 1180px);
+      border: 1px solid #c8d1dc;
+      border-radius: var(--radius-md);
+      background: #f7f9fb;
+      padding: var(--space-4);
+      box-shadow: var(--shadow-2);
+    }
+
+    .launcher-terminal-shell .panel-header {
+      padding: 0 0 var(--space-3);
+      border-bottom: 0;
+      background: transparent;
+    }
+
+    .launcher-terminal-shell .panel-body {
+      padding: 0;
     }
 
     .modal-backdrop {
@@ -561,23 +668,49 @@
     }
 
     .terminal-grid {
+      width: 100%;
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: var(--space-3);
-      margin-top: var(--space-4);
+      align-items: stretch;
+    }
+
+    .terminal-grid[data-count="0"] {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .terminal-grid[data-count="1"] {
+      grid-template-columns: minmax(320px, 760px);
+      justify-content: center;
+    }
+
+    .terminal-grid[data-count="2"] {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .terminal-grid[data-count="3"] {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .terminal-card {
-      border: 1px solid var(--color-neutral-200);
+      border: 1px solid #cfd7df;
       border-radius: var(--radius-sm);
-      padding: var(--space-3);
-      background: var(--color-neutral-50);
-      min-height: 112px;
+      padding: var(--space-4);
+      background: var(--color-neutral-25);
+      min-height: 124px;
+      overflow: hidden;
+      transition: border-color 160ms ease, box-shadow 160ms ease, transform 120ms ease;
     }
 
     .terminal-card.running {
-      border-color: #aceebb;
-      background: #dafbe1;
+      border-color: #8fd19e;
+      background: var(--color-secondary-soft);
+      box-shadow: 0 1px 0 rgba(26, 127, 55, 0.08);
+    }
+
+    .terminal-card:hover {
+      border-color: var(--color-neutral-300);
+      box-shadow: var(--shadow-1);
+      transform: translateY(-1px);
     }
 
     .terminal-title {
@@ -597,11 +730,155 @@
       gap: var(--space-2);
     }
 
-    .session-item {
-      border: 1px solid var(--color-neutral-200);
+    .session-toolbar {
+      display: flex;
+      gap: var(--space-2);
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: var(--space-3);
+      padding: var(--space-2);
+      border: 1px solid #d8dee4;
       border-radius: var(--radius-sm);
+      background: var(--color-neutral-0);
+    }
+
+    .session-toolbar:empty {
+      display: none;
+    }
+
+    .session-item {
+      border: 1px solid #d8dee4;
+      border-radius: var(--radius-sm);
+      padding: var(--space-3);
+      background: var(--color-neutral-25);
+      transition: border-color 160ms ease, box-shadow 160ms ease;
+    }
+
+    .session-item:hover {
+      border-color: var(--color-neutral-300);
+      box-shadow: var(--shadow-1);
+    }
+
+    .session-viewer {
+      border: 1px solid #1f2933;
+      border-radius: var(--radius-md);
+      background: var(--terminal-bg);
+      overflow: hidden;
+      margin: 0 auto var(--space-3);
+      width: 100%;
+      box-shadow: var(--shadow-terminal);
+    }
+
+    .session-viewer-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: var(--space-2);
+      align-items: center;
+      padding: var(--space-3) var(--space-4);
+      border-bottom: 1px solid var(--terminal-line);
+      background: var(--terminal-panel);
+      position: relative;
+    }
+
+    .session-viewer-meta::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: #ff5f56;
+      box-shadow: 15px 0 #ffbd2e, 30px 0 #27c93f;
+      margin-right: 30px;
+    }
+
+    .session-viewer-label {
+      color: var(--terminal-text);
+      font-size: var(--text-xs);
+      overflow-wrap: anywhere;
+      flex: 1;
+    }
+
+    .session-viewer-note {
+      margin: 0 0 var(--space-3);
+      color: var(--color-neutral-600);
+      font-size: var(--text-xs);
+    }
+
+    .session-viewer-host {
+      min-height: clamp(460px, 58vh, 720px);
+      padding: var(--space-3);
+      background: var(--terminal-bg);
+    }
+
+    .session-viewer-host .xterm {
+      padding: var(--space-2);
+    }
+
+    .session-viewer-host .xterm-viewport {
+      scrollbar-color: #3d4651 var(--terminal-bg);
+      scrollbar-width: thin;
+    }
+
+    .session-switcher {
+      display: flex;
+      gap: var(--space-2);
+      flex-wrap: wrap;
+      margin-bottom: var(--space-3);
+      padding: var(--space-1);
+      border: 1px solid #d8dee4;
+      border-radius: var(--radius-md);
+      background: var(--color-neutral-0);
+    }
+
+    .session-switcher:empty {
+      display: none;
+    }
+
+    .terminal-overview {
+      width: 100%;
+      display: grid;
+      gap: var(--space-3);
+    }
+
+    .terminal-overview-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      flex-wrap: wrap;
+    }
+
+    .terminal-overview-title {
+      margin: 0;
+      font-size: var(--text-sm);
+      font-weight: 600;
+      color: var(--color-neutral-700);
+    }
+
+    .session-chip {
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--color-neutral-700);
       padding: var(--space-2) var(--space-3);
+      cursor: pointer;
+      font-size: var(--text-xs);
+      min-height: 34px;
+      font-weight: 600;
+      transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+    }
+
+    .session-chip:hover {
       background: var(--color-neutral-50);
+      border-color: var(--color-neutral-200);
+    }
+
+    .session-chip.active {
+      border-color: var(--color-primary);
+      background: var(--color-primary-soft);
+      color: #0b3d91;
+      box-shadow: 0 1px 0 rgba(9, 105, 218, 0.10);
     }
 
     .empty {
@@ -649,6 +926,39 @@
         grid-template-columns: 1fr;
       }
 
+      .launcher-actions {
+        flex-direction: row;
+        flex-wrap: wrap;
+      }
+
+      .launcher-terminal-stage {
+        width: 100%;
+      }
+
+      .launcher-terminal-shell {
+        padding: var(--space-3);
+      }
+
+      .session-viewer-meta,
+      .terminal-overview-header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .session-viewer {
+        width: 100%;
+      }
+
+      .session-viewer-host {
+        min-height: 320px;
+      }
+
+      .session-switcher,
+      .session-toolbar {
+        overflow-x: auto;
+        padding-bottom: var(--space-1);
+      }
+
       .tabs {
         overflow-x: auto;
       }
@@ -662,7 +972,7 @@
         <div class="mark">CG</div>
         <div>
           <h1 class="brand-title">Codex 三省三部治理看板</h1>
-          <p class="brand-subtitle">Local-first Codex governance dashboard</p>
+          <p class="brand-subtitle" id="dashboard-project">Local-first Codex governance dashboard</p>
         </div>
       </div>
     </div>
@@ -685,13 +995,40 @@
             <button class="button" id="refresh-report">刷新报告</button>
           </div>
         </div>
-        <div class="terminal-grid" id="terminal-grid"></div>
+        <div class="launcher-terminal-stage">
+          <section class="launcher-terminal-shell">
+            <div class="panel-header">
+              <h2 class="panel-title">Codex 终端</h2>
+              <button class="button copy" id="refresh-sessions">刷新</button>
+            </div>
+            <div class="panel-body">
+              <div id="session-toolbar" class="session-toolbar"></div>
+              <div id="session-switcher" class="session-switcher"></div>
+              <div class="session-viewer">
+                <div class="session-viewer-meta">
+                  <span class="session-viewer-label" id="session-terminal-status">xterm 显示层待初始化</span>
+                  <span class="pill warning" id="session-terminal-pill">display-only</span>
+                </div>
+                <div id="session-terminal" class="session-viewer-host"></div>
+              </div>
+              <p class="session-viewer-note">会话元数据 viewer 已接入 launcher stream。选中运行中的会话后可直接输入，回车发送到对应 Codex 窗口。</p>
+              <div id="session-list" class="session-list"></div>
+            </div>
+          </section>
+          <section class="terminal-overview" aria-label="运行终端概览">
+            <div class="terminal-overview-header">
+              <h3 class="terminal-overview-title">运行终端概览</h3>
+              <span class="terminal-meta">最多展示 3 个运行中终端。</span>
+            </div>
+            <div class="terminal-grid" id="terminal-grid" data-count="0"></div>
+          </section>
+        </div>
       </div>
     </section>
 
     <section class="repo-header">
       <div>
-        <p class="repo-path">Codex Governance</p>
+        <p class="repo-path" id="report-project">Codex Governance</p>
         <p class="muted">报告由本地 launcher 自动读取：左侧流程，中间三部分派，右侧风险与验证命令。</p>
         <div class="meta-row">
           <span class="pill success" id="mode-pill">worktree</span>
@@ -760,15 +1097,6 @@
           </div>
         </section>
 
-        <section class="panel stack-panel">
-          <div class="panel-header">
-            <h2 class="panel-title">Codex 终端</h2>
-            <button class="button copy" id="refresh-sessions">刷新</button>
-          </div>
-          <div class="panel-body">
-            <div id="session-list" class="session-list"></div>
-          </div>
-        </section>
       </aside>
     </section>
 
@@ -791,6 +1119,7 @@
     </div>
   </div>
 
+  <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script>
     const emptyReport = {
       title: "Codex 三省三部治理报告",
@@ -822,6 +1151,14 @@
     let pendingPlanSessionId = null;
     let planPollTimer = null;
     let launcherModelChoices = ["gpt-5.5", "gpt-5.4"];
+    let launcherProjectName = "Codex Governance";
+    let sessionTerminal = null;
+    let sessionTerminalReady = false;
+    let terminalSelectedSessionId = null;
+    let terminalEventSource = null;
+    let terminalEventSessionId = null;
+    let terminalInputBuffer = "";
+    let terminalInputEnabled = false;
 
     function setText(id, value) {
       document.getElementById(id).textContent = value;
@@ -857,6 +1194,338 @@
 
     function preferredZhongshuModel() {
       return launcherModelChoices[0] || "gpt-5.5";
+    }
+
+    function sessionRoleLabel(session) {
+      return session.session_kind === "zhongshu" ? "中书省" : (session.department || "department");
+    }
+
+    function sessionDisplayLabel(session) {
+      const title = String(session.title || "").trim();
+      if (title) {
+        return title;
+      }
+      return sessionRoleLabel(session);
+    }
+
+    function sessionSwitcherPriority(session) {
+      if (session.session_kind === "zhongshu") {
+        return 0;
+      }
+      const order = {
+        gongchengbu: 1,
+        zhilibu: 2,
+        lingyubu: 3,
+        menxia: 4,
+      };
+      return order[session.department] || 10;
+    }
+
+    function transcriptPreviewText(session, limit = 6) {
+      if (!session) {
+        return "暂无最近输出。";
+      }
+      const preview = String(session.transcript_preview || "").trim();
+      if (preview) {
+        return preview;
+      }
+      const fallback = buildSessionTranscript(session)
+        .filter((line) => String(line || "").trim())
+        .slice(-limit);
+      return fallback.join("\n") || "暂无最近输出。";
+    }
+
+    function transcriptPreviewHtml(session, limit = 6, compact = false) {
+      const preview = transcriptPreviewText(session, limit);
+      const className = compact ? "terminal-preview compact" : "terminal-preview";
+      return `<pre class="${className}">${escapeHtml(preview)}</pre>`;
+    }
+
+    function ensureSessionTerminal() {
+      if (sessionTerminalReady) {
+        return true;
+      }
+      const host = document.getElementById("session-terminal");
+      if (!host || !window.Terminal) {
+        document.getElementById("session-terminal-status").textContent = "xterm 资源未就绪，保持普通会话列表。";
+        return false;
+      }
+      sessionTerminal = new window.Terminal({
+        convertEol: true,
+        cursorBlink: true,
+        disableStdin: false,
+        fontFamily: 'Consolas, "Courier New", monospace',
+        fontSize: 13,
+        lineHeight: 1.32,
+        theme: {
+          background: "#0b1118",
+          foreground: "#d8dee9",
+          cursor: "#58a6ff",
+          selectionBackground: "rgba(88, 166, 255, 0.28)",
+          black: "#0b1118",
+          brightBlack: "#6e7781",
+          blue: "#58a6ff",
+          green: "#3fb950",
+          yellow: "#d29922",
+          red: "#ff7b72"
+        }
+      });
+      sessionTerminal.open(host);
+      sessionTerminal.onData(handleTerminalInput);
+      sessionTerminalReady = true;
+      return true;
+    }
+
+    function writeTerminalText(text) {
+      const host = document.getElementById("session-terminal");
+      if (!ensureSessionTerminal()) {
+        host.textContent = text;
+        return;
+      }
+      sessionTerminal.clear();
+      sessionTerminal.reset();
+      sessionTerminal.writeln("\u001b[1;36mCodex Governance Terminal\u001b[0m");
+      sessionTerminal.writeln("");
+      String(text).split("\n").forEach((line) => {
+        sessionTerminal.writeln(String(line));
+      });
+    }
+
+    function writeTerminalLines(lines) {
+      writeTerminalText(lines.join("\n"));
+    }
+
+    function terminalSessionIsRunning() {
+      const session = [...activeZhongshuSessions, ...activeSessions]
+        .find((item) => item.id === terminalSelectedSessionId);
+      return Boolean(session && session.status === "running");
+    }
+
+    function handleTerminalInput(data) {
+      if (!terminalInputEnabled || !terminalSelectedSessionId || !terminalSessionIsRunning()) {
+        return;
+      }
+      for (const char of data) {
+        if (char === "\r") {
+          const text = terminalInputBuffer.trim();
+          terminalInputBuffer = "";
+          sessionTerminal.write("\r\n");
+          if (text) {
+            sendTerminalInput(text).catch((error) => {
+              sessionTerminal.writeln(`\u001b[31m发送失败: ${error.message}\u001b[0m`);
+            });
+          }
+          continue;
+        }
+        if (char === "\u007f") {
+          if (terminalInputBuffer.length) {
+            terminalInputBuffer = terminalInputBuffer.slice(0, -1);
+            sessionTerminal.write("\b \b");
+          }
+          continue;
+        }
+        if (char >= " ") {
+          terminalInputBuffer += char;
+          sessionTerminal.write(char);
+        }
+      }
+    }
+
+    async function sendTerminalInput(text) {
+      const sessionId = terminalSelectedSessionId;
+      if (!sessionId) {
+        return;
+      }
+      await launcherFetch("/api/session_input", {
+        method: "POST",
+        body: JSON.stringify({ session_id: sessionId, input: text })
+      });
+      document.getElementById("launcher-status").textContent = `已发送到会话：${sessionId}`;
+    }
+
+    function closeTerminalStream() {
+      if (terminalEventSource) {
+        terminalEventSource.close();
+      }
+      terminalEventSource = null;
+      terminalEventSessionId = null;
+      terminalInputEnabled = false;
+    }
+
+    function connectTerminalStream(session) {
+      if (!session) {
+        closeTerminalStream();
+        document.getElementById("session-terminal-pill").textContent = "idle";
+        writeTerminalLines(buildSessionTranscript(null));
+        return;
+      }
+      if (!window.EventSource) {
+        document.getElementById("session-terminal-pill").textContent = "polling";
+        writeTerminalLines(buildSessionTranscript(session));
+        return;
+      }
+      if (terminalEventSource && terminalEventSessionId === session.id) {
+        return;
+      }
+      closeTerminalStream();
+      terminalEventSessionId = session.id;
+      terminalInputBuffer = "";
+      document.getElementById("session-terminal-pill").textContent = "connecting";
+      writeTerminalLines([`正在连接 stream: ${session.id}`]);
+      terminalEventSource = new EventSource(`${launcherBase}/api/session_stream?id=${encodeURIComponent(session.id)}`);
+      terminalEventSource.addEventListener("session", (event) => {
+        const payload = JSON.parse(event.data);
+        if (!payload.ok) {
+          document.getElementById("session-terminal-status").textContent = payload.error || "stream error";
+          document.getElementById("session-terminal-pill").textContent = "error";
+          return;
+        }
+        terminalInputEnabled = Boolean(payload.input_enabled);
+        document.getElementById("session-terminal-pill").textContent = terminalInputEnabled ? "live input" : "live read";
+        document.getElementById("session-terminal-status").textContent =
+          `${sessionRoleLabel(payload.session)} / ${payload.session.title || payload.session.id} / ${payload.session.status || "unknown"}`;
+        writeTerminalText(payload.transcript || "");
+        if (terminalInputEnabled) {
+          sessionTerminal.write("\r\n\u001b[32m输入后回车发送>\u001b[0m ");
+        }
+      });
+      terminalEventSource.onerror = () => {
+        document.getElementById("session-terminal-pill").textContent = "stream retry";
+        document.getElementById("session-terminal-status").textContent = `stream 重连中：${session.id}`;
+      };
+    }
+
+    function buildSessionTranscript(session) {
+      const lines = [];
+      if (!session) {
+        lines.push("暂无会话。");
+        lines.push("");
+        lines.push(`launcher: ${launcherBase}`);
+        lines.push("提示: 先启动中书省会话，再由中书省拉起部门。");
+        return lines;
+      }
+
+      const inbox = zhongshuInboxMap[session.id] || {};
+      const unreadResults = inbox.unread_results || [];
+      const childDepartments = session.child_departments || [];
+      const queuedDepartments = session.queued_departments || [];
+      const isZhongshu = session.session_kind === "zhongshu";
+      lines.push(`session: ${session.title || session.id}`);
+      lines.push(`id: ${session.id}`);
+      lines.push(`role: ${sessionRoleLabel(session)}`);
+      lines.push(`status: ${session.status || "unknown"}`);
+      lines.push(`model: ${session.model || "unknown model"}`);
+      lines.push(`pid: ${session.pid || "-"}`);
+      lines.push(`started: ${session.started_at || "-"}`);
+      if (session.ended_at) {
+        lines.push(`ended: ${session.ended_at}`);
+      }
+      if (session.parent_session_id) {
+        lines.push(`parent: ${session.parent_session_id}`);
+      }
+      if (session.prompt_path) {
+        lines.push(`prompt: ${session.prompt_path}`);
+      }
+      lines.push("");
+      if (isZhongshu) {
+        lines.push(`未读回传: ${session.unread_result_count || 0}`);
+        lines.push(`下挂部门: ${childDepartments.length}`);
+        childDepartments.forEach((child) => {
+          lines.push(`  - ${child.title || child.id} / ${child.model || "unknown"} / ${child.status || "unknown"} / 回传 ${child.report_status || "pending"}`);
+        });
+        if (!childDepartments.length) {
+          lines.push("  - 暂无下挂部门");
+        }
+        lines.push(`排队部门: ${queuedDepartments.length}`);
+        queuedDepartments.forEach((queued) => {
+          lines.push(`  - ${queued.title || queued.department} / ${queued.model || "unknown"} / ${queued.queued_at || "-"}`);
+        });
+        if (!queuedDepartments.length) {
+          lines.push("  - 无排队部门");
+        }
+        lines.push("最近未读回传:");
+        unreadResults.slice(0, 5).forEach((result) => {
+          lines.push(`  - ${result.department || "unknown"}: ${result.summary || "无摘要"}`);
+        });
+        if (!unreadResults.length) {
+          lines.push("  - 暂无未读回传");
+        }
+      } else {
+        lines.push(`回传状态: ${session.report_status || "pending"}`);
+        lines.push("说明: 当前 viewer 只展示 launcher 已有会话元数据。");
+      }
+      lines.push("");
+      lines.push("viewer_mode: launcher metadata stream");
+      lines.push("input_status: 运行中会话可直接输入，回车发送。");
+      return lines;
+    }
+
+    function resolveTerminalSession() {
+      const allSessions = [];
+      activeZhongshuSessions.forEach((session) => allSessions.push(session));
+      activeSessions
+        .filter((session) => session.session_kind !== "zhongshu")
+        .forEach((session) => allSessions.push(session));
+
+      if (!allSessions.length) {
+        return null;
+      }
+
+      const current = allSessions.find((session) => session.id === terminalSelectedSessionId);
+      if (current) {
+        return current;
+      }
+
+      const runningZhongshu = activeZhongshuSessions.find((session) => session.status === "running");
+      if (runningZhongshu) {
+        terminalSelectedSessionId = runningZhongshu.id;
+        return runningZhongshu;
+      }
+
+      const runningAny = allSessions.find((session) => session.status === "running");
+      if (runningAny) {
+        terminalSelectedSessionId = runningAny.id;
+        return runningAny;
+      }
+
+      terminalSelectedSessionId = allSessions[0].id;
+      return allSessions[0];
+    }
+
+    function renderSessionSwitcher() {
+      const switcher = document.getElementById("session-switcher");
+      switcher.innerHTML = "";
+      const candidates = [
+        ...activeZhongshuSessions,
+        ...activeSessions.filter((session) => session.session_kind !== "zhongshu")
+      ].sort((left, right) => {
+        const priorityDiff = sessionSwitcherPriority(left) - sessionSwitcherPriority(right);
+        if (priorityDiff) {
+          return priorityDiff;
+        }
+        return String(left.started_at || "").localeCompare(String(right.started_at || ""));
+      });
+      if (!candidates.length) {
+        return;
+      }
+
+      candidates.forEach((session) => {
+        const button = document.createElement("button");
+        button.className = `session-chip${session.id === terminalSelectedSessionId ? " active" : ""}`;
+        button.dataset.focusSession = session.id;
+        button.textContent = sessionDisplayLabel(session);
+        switcher.appendChild(button);
+      });
+    }
+
+    function renderSessionTerminal() {
+      const session = resolveTerminalSession();
+      const statusText = session
+        ? `${sessionRoleLabel(session)} / ${session.title || session.id} / ${session.status || "unknown"}`
+        : "暂无会话，xterm 显示占位中";
+      document.getElementById("session-terminal-status").textContent = statusText;
+      renderSessionSwitcher();
+      connectTerminalStream(session);
     }
 
     function renderFlow(report) {
@@ -902,6 +1571,10 @@
     }
 
     function showAssignmentModal(plan) {
+      plan.assignments = Array.isArray(plan.assignments) ? plan.assignments : [];
+      plan.model_choices = Array.isArray(plan.model_choices) && plan.model_choices.length
+        ? plan.model_choices
+        : launcherModelChoices;
       pendingPlan = plan;
       const list = document.getElementById("assignment-list");
       const available = Math.max(0, (plan.max_department_sessions || plan.max_terminals || 0) - (plan.active_department_sessions || plan.active_terminals || 0));
@@ -1002,9 +1675,11 @@
       activeSessions = sessions;
       activeQueue = queue || [];
       const running = sessions.filter((session) => session.status === "running");
+      const overviewSessions = running.slice(0, 3);
       const terminalGrid = document.getElementById("terminal-grid");
       terminalGrid.innerHTML = "";
-      if (!running.length) {
+      terminalGrid.dataset.count = String(Math.min(Math.max(overviewSessions.length, 0), 3));
+      if (!overviewSessions.length) {
         const card = document.createElement("div");
         card.className = "terminal-card";
         card.innerHTML = `
@@ -1013,7 +1688,7 @@
         `;
         terminalGrid.appendChild(card);
       } else {
-        running.forEach((session) => {
+        overviewSessions.forEach((session) => {
           const card = document.createElement("div");
           card.className = "terminal-card running";
           const roleLabel = session.session_kind === "zhongshu" ? "中书省" : (session.department || "department");
@@ -1028,12 +1703,29 @@
             ${parentMeta}
             ${unreadMeta}
             <p class="terminal-meta">${escapeHtml(session.started_at)}</p>
+            <p class="terminal-meta">最近输出</p>
+            ${transcriptPreviewHtml(session, 5, true)}
           `;
           terminalGrid.appendChild(card);
         });
       }
 
       const list = document.getElementById("session-list");
+      const toolbar = document.getElementById("session-toolbar");
+      toolbar.innerHTML = "";
+      const latestZhongshu = activeZhongshuSessions[0];
+      if (latestZhongshu) {
+        const action = document.createElement("button");
+        action.className = latestZhongshu.status === "running" ? "button primary" : "button";
+        action.dataset.restartZhongshu = latestZhongshu.id;
+        action.textContent = latestZhongshu.status === "running" ? "继续中书省" : "恢复最近中书省";
+        toolbar.appendChild(action);
+        const meta = document.createElement("span");
+        meta.className = "terminal-meta";
+        meta.textContent = `${latestZhongshu.title} / ${latestZhongshu.status} / 未读 ${latestZhongshu.unread_result_count || 0}`;
+        toolbar.appendChild(meta);
+      }
+
       list.innerHTML = "";
       if (!activeZhongshuSessions.length && !activeQueue.length) {
         list.appendChild(emptyState("暂无中书省会话记录。"));
@@ -1051,6 +1743,7 @@
         const childHtml = childDepartments.length
           ? childDepartments.map((child) => `
             <p class="terminal-meta">- ${escapeHtml(child.title)} / ${escapeHtml(child.model || "unknown model")} / ${escapeHtml(child.status || "unknown")} / 回传 ${escapeHtml(child.report_status || "pending")}</p>
+            ${transcriptPreviewHtml(child, 3, true)}
           `).join("")
           : `<p class="terminal-meta">- 暂无下挂部门</p>`;
         const queuedHtml = queuedDepartments.length
@@ -1069,6 +1762,8 @@
           <p class="terminal-meta">${escapeHtml(session.prompt_path)}</p>
           <p class="terminal-meta">${escapeHtml(session.started_at)}${session.ended_at ? " -> " + escapeHtml(session.ended_at) : ""}</p>
           ${session.status !== "running" ? `<button class="button" data-restart-zhongshu="${escapeHtml(session.id)}">恢复中书省</button>` : ""}
+          <p class="terminal-meta">最近输出：</p>
+          ${transcriptPreviewHtml(session, 6, true)}
           <p class="terminal-meta">下挂部门：</p>
           ${childHtml}
           <p class="terminal-meta">队列：</p>
@@ -1090,6 +1785,8 @@
           list.appendChild(queued);
         });
       }
+
+      renderSessionTerminal();
     }
 
     function renderReport(report) {
@@ -1145,6 +1842,9 @@
       try {
         const payload = await launcherFetch("/api/status");
         launcherModelChoices = payload.model_choices || launcherModelChoices;
+        launcherProjectName = payload.project_name || launcherProjectName;
+        setText("dashboard-project", `${launcherProjectName} / local governance dashboard`);
+        setText("report-project", `${launcherProjectName} / Codex Governance`);
         setLauncherStatus(true, `已连接：${launcherBase}，仓库：${payload.repo}`);
         activeZhongshuSessions = payload.zhongshu_sessions || [];
         renderSessions(payload.sessions || [], payload.queue || []);
@@ -1239,7 +1939,10 @@
           };
         });
       if (!selected.length) {
-        document.getElementById("launcher-status").textContent = "未选择部门，未启动。";
+        hideAssignmentModal();
+        pendingPlanSessionId = pendingPlan.session_id || pendingPlanSessionId;
+        pendingPlan = null;
+        document.getElementById("launcher-status").textContent = "没有可启动的部门，已关闭确认框。";
         return;
       }
       const payload = await launcherFetch("/api/start_assignments", {
@@ -1292,6 +1995,13 @@
           .catch((error) => {
             document.getElementById("launcher-status").textContent = `恢复失败：${error.message}`;
           });
+        return;
+      }
+
+      const focusButton = event.target.closest("[data-focus-session]");
+      if (focusButton) {
+        terminalSelectedSessionId = focusButton.dataset.focusSession;
+        renderSessionTerminal();
       }
     });
 
@@ -1336,8 +2046,14 @@
         try {
           const payload = await launcherFetch(`/api/zhongshu_plan?id=${encodeURIComponent(pendingPlanSessionId)}`);
           if (payload.plan && payload.plan.ready) {
-            showAssignmentModal(payload.plan);
-            document.getElementById("launcher-status").textContent = `中书省已回传分派方案：${pendingPlanSessionId}。请确认启动。`;
+            const assignments = Array.isArray(payload.plan.assignments) ? payload.plan.assignments : [];
+            if (assignments.length) {
+              showAssignmentModal(payload.plan);
+              document.getElementById("launcher-status").textContent = `中书省已回传分派方案：${pendingPlanSessionId}。请确认启动。`;
+            } else {
+              pendingPlan = null;
+              document.getElementById("launcher-status").textContent = `中书省没有请求启动部门：${pendingPlanSessionId}。`;
+            }
             return;
           }
           document.getElementById("launcher-status").textContent = `中书省会话 ${pendingPlanSessionId} 正在生成分派方案。`;
@@ -1358,16 +2074,21 @@
     }
 
     async function restartZhongshu(sessionId) {
+      hideAssignmentModal();
       const payload = await launcherFetch("/api/restart_zhongshu_session", {
         method: "POST",
         body: JSON.stringify({ session_id: sessionId, model: preferredZhongshuModel() })
       });
       pendingPlanSessionId = payload.session.id;
       pendingPlan = null;
-      document.getElementById("launcher-status").textContent =
-        `已恢复中书省会话：${payload.session.id}（来源 ${sessionId}）。等待中书省继续处理。`;
+      if (payload.resumed_inline) {
+        document.getElementById("launcher-status").textContent =
+          `已在原中书省会话继续：${payload.session.id}。`;
+      } else {
+        document.getElementById("launcher-status").textContent =
+          `已恢复中书省会话：${payload.session.id}（来源 ${sessionId}）。等待中书省继续处理。`;
+      }
       await refreshSessions();
-      await pollZhongshuPlan(true);
     }
 
     renderReport(emptyReport);
