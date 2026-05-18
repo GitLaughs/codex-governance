@@ -77,7 +77,7 @@ DEPARTMENT_PROMPTS = {
 }
 
 DEPARTMENT_REPORT_POLICY = (
-    "mailbox 回传即视为部门本轮结束；写完 mailbox 后即可结束本部门会话。"
+    "mailbox 回传即视为部门本轮结束；写完 mailbox 后必须立即停止本部门会话，不要继续观察或追加工作。"
     "中书省收到回传后只读 inbox 摘要、风险和 next_action，无需继续观察该部门终端。"
 )
 
@@ -1015,8 +1015,8 @@ def register_result(
             department_session["report_status"] = "reported"
             department_session["reported_at"] = result["reported_at"]
             department_session["last_report_id"] = result_id
-            department_session["auto_closed"] = False
-            department_session["auto_close_reason"] = "report_received_but_session_preserved"
+            department_session["auto_closed"] = close_session_process(department_session_id)
+            department_session["auto_close_reason"] = "mailbox_report_received"
     notification = auto_notify_zhongshu(parent_session_id, result)
     result["auto_notification"] = notification
     return result
@@ -1565,7 +1565,7 @@ def build_department_prompt(
         f"$json=$payload|ConvertTo-Json -Depth 8;"
         f"$path=Join-Path '{mailbox['incoming']}' (\"report-$(Get-Date -Format yyyyMMdd-HHmmss)-{department}.json\");"
         f"[System.IO.File]::WriteAllText($path,$json,[System.Text.UTF8Encoding]::new($false))。"
-        f"写完 mailbox 后即可结束本部门会话。"
+        f"写完 mailbox 后必须立即停止本部门会话，不要继续执行其他命令。"
     )
 
 

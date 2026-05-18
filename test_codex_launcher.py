@@ -270,7 +270,7 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertIn("合理使用最多 2 个部门空位", zhongshu_prompt)
         self.assertIn("同时派两个", zhongshu_prompt)
         self.assertIn("mailbox 回传即视为部门本轮结束", zhongshu_prompt)
-        self.assertIn("写完 mailbox 后即可结束本部门会话", department_prompt)
+        self.assertIn("写完 mailbox 后必须立即停止本部门会话", department_prompt)
         self.assertNotIn("观察窗", zhongshu_prompt)
         self.assertNotIn("观察窗", department_prompt)
         self.assertIn("跑最相关验证", department_prompt)
@@ -279,7 +279,7 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertEqual(codex_launcher.DEPARTMENT_OBSERVATION_WAIT_MINUTES, 10)
         self.assertEqual(codex_launcher.DEPARTMENT_OBSERVATION_CHECK_SECONDS, 90)
 
-    def test_department_report_does_not_auto_close_running_session(self):
+    def test_department_report_auto_closes_running_session(self):
         parent_session_id = "zhongshu-preserve-child"
         department_session_id = "zhilibu-still-running"
         codex_launcher.SESSIONS.extend(
@@ -319,9 +319,9 @@ class ZhongshuPlanTests(unittest.TestCase):
 
         child = codex_launcher.get_session(department_session_id, codex_launcher.SESSION_KIND_DEPARTMENT)
         self.assertEqual(child["report_status"], "reported")
-        self.assertEqual(child["status"], "running")
-        self.assertFalse(child["auto_closed"])
-        self.assertEqual(child["auto_close_reason"], "report_received_but_session_preserved")
+        self.assertEqual(child["status"], "exited")
+        self.assertTrue(child["auto_closed"])
+        self.assertEqual(child["auto_close_reason"], "mailbox_report_received")
 
     def test_restart_running_zhongshu_sends_prompt_to_original_session(self):
         session_id = "zhongshu-running"
@@ -829,6 +829,10 @@ class ZhongshuPlanTests(unittest.TestCase):
         dashboard = (Path(__file__).resolve().parent / "dashboard.html").read_text(encoding="utf-8")
 
         self.assertLess(dashboard.index('class="browser-terminal-shell"'), dashboard.index('class="session-shell"'))
+        self.assertIn("width: min(100%, 1440px)", dashboard)
+        self.assertIn("justify-items: stretch", dashboard)
+        self.assertIn(".browser-terminal-shell", dashboard)
+        self.assertIn(".browser-terminal-card", dashboard)
         self.assertIn("grid-template-columns: 1fr", dashboard)
         self.assertIn("height: clamp(520px, 68vh, 860px)", dashboard)
 
