@@ -70,6 +70,14 @@ def normalize_task_text(task: str) -> str:
     return normalized.strip()
 
 
+def context_doc_instruction(*, include_related_docs: bool) -> str:
+    optional_docs = ["AGENTS.md"]
+    if WORKFLOW_DOC and WORKFLOW_DOC not in {"README.md", "AGENTS.md"}:
+        optional_docs.append(WORKFLOW_DOC)
+    related_docs = " 和相关目录文档" if include_related_docs else ""
+    return f"先读取 README.md；如存在 {'、'.join(optional_docs)}{related_docs}，也一并读取"
+
+
 def write_prompt(prefix: str, prompt: str) -> Path:
     PROMPT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -709,7 +717,7 @@ def build_zhongshu_resume_prompt(snapshot: dict, launcher_url: str, session_id: 
     return (
         f"你是 {PROJECT_NAME} 的中书省。恢复之前中断的任务：{task}。不要要求用户重述任务。"
         f"上一次分派方案：{plan_summary}。当前下挂部门状态：{child_summary}。最近回传摘要：{report_summary}。"
-        f"继续读取 README.md、AGENTS.md、{WORKFLOW_DOC} 和相关目录文档，必要时再运行治理报告脚本。"
+        f"继续{context_doc_instruction(include_related_docs=True)}，必要时再运行治理报告脚本。"
         f"如果还需要前端确认新的分派方案，就回传到 {launcher_url}/api/report_zhongshu_plan（session_id={session_id}）；否则继续监察部门执行和结果回传，收取结果只用 {launcher_url}/api/zhongshu_inbox?id={session_id}。"
     )
 
@@ -825,7 +833,7 @@ def queue_worker() -> None:
 def build_zhongshu_prompt(task: str, launcher_url: str, session_id: str) -> str:
     return (
         f"你是 {PROJECT_NAME} 的中书省。正式任务：{task}。不要要求用户重述任务。"
-        f"先读取 README.md、AGENTS.md、{WORKFLOW_DOC} 和相关目录文档，再运行治理报告脚本。"
+        f"{context_doc_instruction(include_related_docs=True)}，再运行治理报告脚本。"
         f"第一阶段只生成结构化分派方案并回传到 {launcher_url}/api/report_zhongshu_plan（session_id={session_id}），不要直接启动下属部门。"
         f"等前端确认后，再继续监察三部执行和结果回传；收取部门结果只用 {launcher_url}/api/zhongshu_inbox?id={session_id}。"
         f"如果下属部门出现 exceeded retry limit、429 Too Many Requests 或 request limit 报错，不要立刻拉满重试；先等待一段时间，再按原部门任务重试，并优先保持低并发。"
@@ -843,7 +851,7 @@ def build_department_prompt(
     mailbox = ensure_zhongshu_mailbox(parent_session_id)
     return (
         f"你是 {PROJECT_NAME} 的{title}。正式任务：{task}。不要要求用户重述任务。职责：{duty}。"
-        f"先读取 AGENTS.md、{WORKFLOW_DOC} 和与你职责相关的文件，执行前先看 git status --short。"
+        f"{context_doc_instruction(include_related_docs=False)}；再读取与你职责相关的文件，执行前先看 git status --short。"
         f"只处理本部门职责范围内文件，不要回滚用户或其他终端改动。完成后运行治理报告脚本。"
         f"然后优先把结果 POST 到 {launcher_url}/api/report_result，并带 parent_session_id={parent_session_id}、department_session_id={department_session_id}、department={department}；"
         f"若 HTTP 失败，再把同结构 JSON 写入 {mailbox['incoming']}。最终说明已改文件、已跑验证、未跑验证和剩余风险。"
