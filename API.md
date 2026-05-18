@@ -21,29 +21,13 @@ Query parameters:
 - `mode`: `worktree`, `staged`, or `base`
 - `base`: Git ref used when `mode=base`
 
-## GET `/api/session_stream?id=<session_id>`
+Report payloads include a `preflight.checks.portability_reference_scan` object:
 
-Server-Sent Events stream for the dashboard terminal viewer. Intended for the local trusted launcher UI only.
-
-Query parameters:
-
-- `id`: required session id
-
-Event shape:
-
-- event name: `session`
-- payload fields:
-  - `ok`
-  - `session`: public session metadata
-  - `input_enabled`: `true` when the target session is still running
-  - `transcript`: launcher-side transcript text for xterm display; when the session was started by this launcher, it includes a tail of the mirrored Codex stdout/stderr log
-
-Notes:
-
-- `dashboard.html` uses `EventSource` against this route and renders the result with root-level `node_modules/@xterm/xterm`.
-- The stream is display-oriented launcher metadata plus local log tail, not a raw PTY bridge and not a remote shell API.
-- The launcher checks the session transcript once per second and only pushes a new SSE frame when the payload changes.
-- The dashboard keeps one interactive xterm viewer for the currently selected session; the "running terminal overview" area is a summary card view, not additional interactive streams.
+- `decision`: `PASS` or `REVIEW`
+- `scope`: scanned governance surface family
+- `scanned_files`: files inspected with UTF-8 decoding
+- `violations`: machine-local references that need review
+- `exceptions`: machine-local references treated as command or inline-code examples
 
 ## GET `/api/zhongshu_sessions`
 
@@ -120,28 +104,6 @@ Request fields:
 - `parent_session_id`: optional when one active Zhongshu session exists
 - `model`: optional
 
-## POST `/api/session_input`
-
-Sends one normalized line of input to a running Codex session window through the trusted local launcher path.
-
-Request fields:
-
-- `session_id`
-- `input`
-
-Success response fields:
-
-- `ok`
-- `session_id`
-- `sent_at`
-
-Failure cases:
-
-- unknown `session_id`
-- empty `input`
-- target session not running
-- launcher failed to deliver input to the matched local Codex window
-
 ## Department Result Mailbox
 
 Department sessions report by writing UTF-8 JSON files to:
@@ -165,6 +127,14 @@ Optional fields:
 - `risks`
 - `next_action`
 - `needs_user_confirmation`
+
+When the launcher registers a department report, it also writes a Markdown handoff packet under:
+
+```text
+.tmp/codex_governance_mailbox/<zhongshu_session_id>/archive/handoff-*.md
+```
+
+The registered result includes `handoff_packet` with the generated path. The packet records the parent session, department session, source, objective, summary, changed files, verification, risks, and next action.
 
 ## Failure Shape
 

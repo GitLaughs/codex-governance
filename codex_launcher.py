@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -32,7 +34,7 @@ MAILBOX_ROOT = REPO_ROOT / ".tmp" / "codex_governance_mailbox"
 SESSION_LOG_DIR = REPO_ROOT / ".tmp" / "codex_governance_logs"
 RUNNER = SCRIPT_DIR / "run_codex_prompt.py"
 MAX_CODEX_TERMINALS = int(os.environ.get("CODEX_GOVERNANCE_MAX_DEPARTMENTS", "2"))
-API_VERSION = 3
+API_VERSION = 5
 ACTIVE_PROCESSES: list[subprocess.Popen] = []
 SESSIONS: list[dict] = []
 ASSIGNMENT_QUEUE: list[dict] = []
@@ -54,6 +56,14 @@ WORKFLOW_DOC = os.environ.get("CODEX_GOVERNANCE_WORKFLOW_DOC", "AGENTS.md")
 ALLOW_ORIGIN = os.environ.get("CODEX_GOVERNANCE_ALLOW_ORIGIN", "*")
 DEPARTMENT_OBSERVATION_WAIT_MINUTES = int(os.environ.get("CODEX_GOVERNANCE_DEPARTMENT_OBSERVATION_WAIT_MINUTES", "10"))
 DEPARTMENT_OBSERVATION_CHECK_SECONDS = int(os.environ.get("CODEX_GOVERNANCE_DEPARTMENT_OBSERVATION_CHECK_SECONDS", "90"))
+TTYD_ENABLED = os.environ.get("CODEX_GOVERNANCE_TTYD_ENABLED", "0").strip().lower() not in {"0", "false", "no", "off"}
+TTYD_COMMAND = os.environ.get("CODEX_GOVERNANCE_TTYD_COMMAND", "ttyd").strip() or "ttyd"
+TTYD_HOST = os.environ.get("CODEX_GOVERNANCE_TTYD_HOST", "127.0.0.1").strip() or "127.0.0.1"
+TTYD_PORT = int(os.environ.get("CODEX_GOVERNANCE_TTYD_PORT", "7681"))
+TTYD_WRITABLE = os.environ.get("CODEX_GOVERNANCE_TTYD_WRITABLE", "0").strip().lower() not in {"0", "false", "no", "off"}
+TTYD_BASE_URL = os.environ.get("CODEX_GOVERNANCE_TTYD_BASE_URL", f"http://{TTYD_HOST}:{TTYD_PORT}").strip() or f"http://{TTYD_HOST}:{TTYD_PORT}"
+TTYD_AVAILABLE: bool | None = None
+TTYD_RESOLVED_PATH = ""
 
 DEPARTMENT_PROMPTS = {
     "menxia": ("门下省", "风险复核、边界检查、必要时驳回"),
@@ -63,10 +73,8 @@ DEPARTMENT_PROMPTS = {
 }
 
 DEPARTMENT_REPORT_POLICY = (
-    "部门回传不等于部门结束；下属部门可在写入 mailbox 后继续补证据或修正文档事实。"
-    f"中书省不得因收到一次回传就终止运行中的下属部门；至少保留 {DEPARTMENT_OBSERVATION_WAIT_MINUTES} 分钟观察窗，"
-    f"每 {DEPARTMENT_OBSERVATION_CHECK_SECONDS // 60 or 1}-{max(2, DEPARTMENT_OBSERVATION_CHECK_SECONDS // 60 + 1)} 分钟检查一次 inbox/终端；"
-    "只有观察窗内终端无新输出、会话退出或明确报错时，才终止或重派。"
+    "mailbox 回传即视为部门本轮结束；写完 mailbox 后即可结束本部门会话。"
+    "中书省收到回传后只读 inbox 摘要、风险和 next_action，无需继续观察该部门终端。"
 )
 
 EFFICIENT_EXECUTION_POLICY = (
@@ -75,8 +83,8 @@ EFFICIENT_EXECUTION_POLICY = (
 )
 
 ZHONGSHU_CONTINUATION_POLICY = (
-    "续派：部门回传非最终；含 next_action/风险/TODO/未实现/还需要 时，继续推进或回传 report_zhongshu_plan。"
-    "并发未满且可并行时，续派 1-2 个最有价值部门，勿闲置空位；中书省只做小判断和最终汇总。"
+    "续派：只在回传明确给出 next_action、风险或缺口时再派；否则汇总交付。"
+    "并发未满且任务可并行时才派 1-2 个部门；中书省只做范围判断和最终汇总。"
     f"{DEPARTMENT_REPORT_POLICY}"
 )
 
@@ -96,6 +104,84 @@ def clipped_text(value: object, limit: int = 240) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def is_port_free(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def next_ttyd_port(host: str, start_port: int) -> int:
+    used_ports = {
+        int(session.get("ttyd_port"))
+        for session in SESSIONS
+        if session.get("ttyd_port") and session.get("ttyd_status") == "running"
+    }
+    port = max(1, int(start_port))
+    for _ in range(200):
+        if port not in used_ports and is_port_free(host, port):
+            return port
+        port += 1
+    raise OSError(f"no free ttyd port near {start_port}")
+
+
+def probe_ttyd(force: bool = False) -> dict:
+    global TTYD_AVAILABLE, TTYD_RESOLVED_PATH
+    if force or TTYD_AVAILABLE is None:
+        resolved = shutil.which(TTYD_COMMAND) if TTYD_ENABLED else None
+        TTYD_AVAILABLE = bool(resolved)
+        TTYD_RESOLVED_PATH = resolved or ""
+    return {
+        "enabled": TTYD_ENABLED,
+        "available": bool(TTYD_AVAILABLE),
+        "command": TTYD_RESOLVED_PATH or TTYD_COMMAND,
+        "host": TTYD_HOST,
+        "port": TTYD_PORT,
+        "base_url": TTYD_BASE_URL,
+        "writable": TTYD_WRITABLE,
+    }
+
+
+def build_ttyd_command(cwd: Path, port: int) -> list[str]:
+    command = [
+        TTYD_RESOLVED_PATH or TTYD_COMMAND,
+        "-p",
+        str(port),
+        "-w",
+        str(cwd),
+    ]
+    if TTYD_WRITABLE:
+        command.append("-W")
+    command.extend(["powershell", "-NoLogo", "-NoExit"])
+    return command
+
+
+def start_ttyd_sidecar(session_id: str, cwd: Path) -> dict:
+    capability = probe_ttyd()
+    if not capability["enabled"]:
+        return {"enabled": False, "available": False, "status": "disabled"}
+    if not capability["available"]:
+        return {"enabled": True, "available": False, "status": "missing", "error": f"{TTYD_COMMAND} not found"}
+    port = next_ttyd_port(TTYD_HOST, TTYD_PORT)
+    command = build_ttyd_command(cwd, port)
+    process = subprocess.Popen(command, cwd=cwd)
+    return {
+        "enabled": True,
+        "available": True,
+        "status": "running",
+        "port": port,
+        "url": f"http://{TTYD_HOST}:{port}/",
+        "base_url": capability["base_url"],
+        "command": capability["command"],
+        "start_args": command[1:],
+        "pid": process.pid,
+        "process": process,
+    }
 
 
 def write_prompt(prefix: str, prompt: str) -> Path:
@@ -146,7 +232,7 @@ def transcript_preview_text(lines: list[str], limit: int = 6) -> str:
 
 
 def session_public(session: dict, *, include_preview: bool = True) -> dict:
-    public = {key: value for key, value in session.items() if key != "_process"}
+    public = {key: value for key, value in session.items() if not str(key).startswith("_")}
     if include_preview:
         session_id = str(session.get("id", "")).strip()
         if session_id:
@@ -223,6 +309,65 @@ def write_mailbox_item(zhongshu_session_id: str, department: str, payload: dict)
     return path
 
 
+def safe_filename_part(value: object, fallback: str = "session") -> str:
+    text = str(value or "").strip() or fallback
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in text)
+    return safe.strip("_") or fallback
+
+
+def build_handoff_packet(parent_session_id: str, result: dict, session: dict | None = None) -> str:
+    department_session_id = result.get("department_session_id") or (session or {}).get("id") or result["report_id"]
+    changed_files = result.get("changed_files") or []
+    verifications = result.get("verifications_run") or []
+    skipped = result.get("verifications_skipped") or []
+    risks = result.get("risks") or []
+    sections = [
+        "# Codex Department Handoff",
+        "",
+        f"parent_session_id: {parent_session_id}",
+        f"department_session_id: {department_session_id}",
+        f"department: {result.get('department', 'unknown')}",
+        f"source: {result.get('source', 'unknown')}",
+        f"reported_at: {result.get('reported_at', now_text())}",
+        "",
+        "## Objective",
+        str((session or {}).get("task") or result.get("task") or "未记录部门原始任务。"),
+        "",
+        "## Summary",
+        str(result.get("summary") or "无摘要。"),
+        "",
+        "## Changed Files",
+    ]
+    sections.extend(f"- {item}" for item in changed_files)
+    if not changed_files:
+        sections.append("- 无记录。")
+    sections.extend(["", "## Verification"])
+    sections.extend(f"- {item}" for item in verifications)
+    if skipped:
+        sections.append("")
+        sections.append("Skipped:")
+        sections.extend(f"- {item}" for item in skipped)
+    if not verifications and not skipped:
+        sections.append("- 未记录验证。")
+    sections.extend(["", "## Risks"])
+    sections.extend(f"- {item}" for item in risks)
+    if not risks:
+        sections.append("- 无新增风险。")
+    sections.extend(["", "## Next Action", str(result.get("next_action") or "中书省复核后决定是否续派或交付。"), ""])
+    return "\n".join(sections)
+
+
+def write_handoff_packet(parent_session_id: str, result: dict) -> Path:
+    paths = mailbox_paths(parent_session_id)
+    ensure_zhongshu_mailbox(parent_session_id)
+    session_id = str(result.get("department_session_id") or result.get("report_id") or "department")
+    session = get_session(session_id, SESSION_KIND_DEPARTMENT) if session_id else None
+    filename = f"handoff-{safe_filename_part(session_id)}-{time.time_ns()}.md"
+    path = paths["archive"] / filename
+    path.write_text(build_handoff_packet(parent_session_id, result, session), encoding="utf-8")
+    return path
+
+
 def refresh_sessions() -> None:
     prune_processes()
     for session in SESSIONS:
@@ -232,6 +377,13 @@ def refresh_sessions() -> None:
         running = process.poll() is None
         session["status"] = "running" if running else "exited"
         session["ended_at"] = None if running else session.get("ended_at") or now_text()
+        ttyd_process = session.get("_ttyd_process")
+        if ttyd_process is None:
+            continue
+        ttyd_running = ttyd_process.poll() is None
+        session["ttyd_status"] = "running" if ttyd_running else "exited"
+        if not ttyd_running and session.get("ttyd_pid"):
+            session["ttyd_ended_at"] = session.get("ttyd_ended_at") or now_text()
 
 
 def active_terminal_count() -> int:
@@ -271,6 +423,13 @@ def close_session_process(session_id: str) -> bool:
     session = get_session(session_id)
     if session is None:
         return False
+    ttyd_process = session.get("_ttyd_process")
+    if ttyd_process is not None and ttyd_process.poll() is None:
+        ttyd_process.terminate()
+        try:
+            ttyd_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            ttyd_process.kill()
     process = session.get("_process")
     if process is not None and process.poll() is None:
         process.terminate()
@@ -280,6 +439,8 @@ def close_session_process(session_id: str) -> bool:
             process.kill()
     session["status"] = "exited"
     session["ended_at"] = now_text()
+    if session.get("ttyd_status") == "running":
+        session["ttyd_status"] = "exited"
     return True
 
 
@@ -351,7 +512,7 @@ def build_zhongshu_result_prompt(parent_session_id: str, result: dict) -> str:
         f"部门：{result.get('department', 'unknown')}。摘要：{summary}。"
         f"风险：{risk_text}。"
         f"状态：完成 {len(completed)}，运行 {len(running)}，排队 {len(queued)}。"
-        f"读完整结果：{LAUNCHER_BASE_URL}/api/zhongshu_inbox?id={parent_session_id}&peek=1；然后续派或汇总。"
+        f"读完整结果：{LAUNCHER_BASE_URL}/api/zhongshu_inbox?id={parent_session_id}&peek=1；按 next_action 判断续派或汇总。"
         f"{suffix}"
     )
 
@@ -599,6 +760,7 @@ def register_result(
     if mailbox_file:
         result["mailbox_file"] = mailbox_file
     reports.insert(0, result)
+    result["handoff_packet"] = str(write_handoff_packet(parent_session_id, result))
     if mark_unread:
         parent["unread_result_count"] = parent.get("unread_result_count", 0) + 1
 
@@ -660,7 +822,7 @@ def synthesize_missing_department_reports() -> list[dict]:
             "verifications_skipped": ["部门未回传验证明细。"],
             "risks": ["部门进程退出时缺少正式回传；需要中书省结合会话输出判断是否继续追问或重派。"],
             "needs_user_confirmation": False,
-            "next_action": "读取该部门终端输出；若结果不完整，按原任务重派最小范围部门。",
+            "next_action": "读取 inbox 回传；若结果不完整，按原任务重派最小范围部门。",
             "reported_at": session.get("ended_at") or now_text(),
         }
         synthesized.append(
@@ -745,6 +907,8 @@ def session_transcript_lines(session_id: str) -> list[str]:
         lines.append(f"parent: {session['parent_session_id']}")
     if session.get("prompt_path"):
         lines.append(f"prompt: {session['prompt_path']}")
+    if session.get("ttyd_url"):
+        lines.append(f"ttyd: {session['ttyd_url']} ({session.get('ttyd_status', 'unknown')})")
 
     lines.append("")
     if session.get("session_kind") == SESSION_KIND_ZHONGSHU:
@@ -874,6 +1038,16 @@ def start_codex_terminal(
         creationflags=subprocess.CREATE_NEW_CONSOLE,
     )
     ACTIVE_PROCESSES.append(process)
+    try:
+        ttyd = start_ttyd_sidecar(resolved_session_id, REPO_ROOT)
+    except OSError as exc:
+        ttyd = {
+            "enabled": TTYD_ENABLED,
+            "available": bool(TTYD_AVAILABLE),
+            "status": "error",
+            "command": TTYD_RESOLVED_PATH or TTYD_COMMAND,
+            "error": str(exc),
+        }
     session = {
         "id": resolved_session_id,
         "department": prefix,
@@ -890,6 +1064,23 @@ def start_codex_terminal(
         "ended_at": None,
         "_process": process,
     }
+    session["ttyd_enabled"] = ttyd.get("enabled", False)
+    session["ttyd_available"] = ttyd.get("available", False)
+    session["ttyd_status"] = ttyd.get("status", "disabled")
+    if ttyd.get("command"):
+        session["ttyd_command"] = ttyd["command"]
+    if ttyd.get("start_args"):
+        session["ttyd_start_args"] = ttyd["start_args"]
+    if ttyd.get("port"):
+        session["ttyd_port"] = ttyd["port"]
+    if ttyd.get("url"):
+        session["ttyd_url"] = ttyd["url"]
+    if ttyd.get("pid"):
+        session["ttyd_pid"] = ttyd["pid"]
+    if ttyd.get("process") is not None:
+        session["_ttyd_process"] = ttyd["process"]
+    if ttyd.get("error"):
+        session["ttyd_error"] = ttyd["error"]
     if session_kind == SESSION_KIND_ZHONGSHU:
         session["unread_result_count"] = 0
         session["child_department_ids"] = []
@@ -1097,9 +1288,9 @@ def build_zhongshu_prompt(task: str, launcher_url: str, session_id: str) -> str:
         f"你是 {PROJECT_NAME} 的中书省。任务：{task}。"
         f"{EFFICIENT_EXECUTION_POLICY}"
         f"{ZHONGSHU_CONTINUATION_POLICY}"
-        f"先读 AGENTS.md；必要时跑一次治理报告。生成精简分派 POST {launcher_url}/api/report_zhongshu_plan session_id={session_id}。"
+        f"先读 AGENTS.md；只在范围不清时跑治理报告。生成精简分派 POST {launcher_url}/api/report_zhongshu_plan session_id={session_id}。"
         f"合理使用最多 2 个部门空位：可拆成实现/验证/文档/复核两块时同时派两个；只有一个可执行块才派一个。"
-        f"确认后监察回传；收件箱 {launcher_url}/api/zhongshu_inbox?id={session_id}。遇 429/request limit：等待后低并发重试。"
+        f"确认后只看收件箱 {launcher_url}/api/zhongshu_inbox?id={session_id}。遇 429/request limit：等待后低并发重试。"
     )
 
 
@@ -1116,26 +1307,26 @@ def build_department_prompt(
         f"你是 {PROJECT_NAME} 的{title}。职责：{duty}。任务：{task}。"
         f"{EFFICIENT_EXECUTION_POLICY}"
         f"{DEPARTMENT_REPORT_POLICY}"
-        f"先看 AGENTS.md 和 git status --short；只改职责内文件，不回滚他人改动。完成后跑最相关验证。"
+        f"先看 AGENTS.md、git status --short 和任务相关文件；不做宽泛证据搜索。完成后跑最相关验证。"
         f"回传只写 mailbox JSON。模板："
         f"$payload=[ordered]@{{parent_session_id='{parent_session_id}';department_session_id='{department_session_id}';department='{department}';summary='填写摘要';changed_files=@();verification=@();risks=@();next_action=''}};"
         f"$json=$payload|ConvertTo-Json -Depth 8;"
         f"$path=Join-Path '{mailbox['incoming']}' (\"report-$(Get-Date -Format yyyyMMdd-HHmmss)-{department}.json\");"
         f"[System.IO.File]::WriteAllText($path,$json,[System.Text.UTF8Encoding]::new($false))。"
-        f"最终说明 mailbox 路径、改动、验证、风险。"
+        f"写完 mailbox 后即可结束本部门会话。"
     )
 
 
 def build_assignment_task(department: dict, user_task: str, report: dict) -> str:
-    files = "、".join(department["files"][:8]) or "无"
+    files = "、".join(department["files"][:4]) or "无"
     verify = "；".join(department["verify"]) or "python tools/codex_governance/codex_governance.py"
     return (
         f"用户总任务：{normalize_task_text(user_task)}。"
         f"中书省分配给{department['title']}，职责：{department['duty']}。"
-        f"优先关注这些文件：{files}。"
+        f"优先关注这些文件，最多先读 4 个：{files}。"
         f"建议验证：{verify}。"
         f"边界：只处理本部门职责内文件，不回滚用户或其他 Codex 终端改动。"
-        f"当前报告共 {report['changed_count']} 个改动文件、{len(report['risks'])} 个风险。"
+        f"不要扩展到无关本地证据；当前报告共 {report['changed_count']} 个改动文件、{len(report['risks'])} 个风险。"
     )
 
 
@@ -1224,6 +1415,7 @@ def build_status_payload(*, include_session_lists: bool = True) -> dict:
     sessions = session_snapshot() if include_session_lists else []
     zhongshu_sessions = [session for session in sessions if session["session_kind"] == SESSION_KIND_ZHONGSHU]
     department_sessions = [session for session in sessions if session["session_kind"] == SESSION_KIND_DEPARTMENT]
+    ttyd = probe_ttyd()
     return {
         "ok": True,
         "api_version": API_VERSION,
@@ -1240,6 +1432,7 @@ def build_status_payload(*, include_session_lists: bool = True) -> dict:
         "model_choices": MODEL_CHOICES,
         "zhongshu_model": ZHONGSHU_MODEL,
         "department_model": DEPARTMENT_MODEL,
+        "ttyd": ttyd,
         "queue": queue_snapshot(),
         "department_queue": queue_snapshot(),
         "sessions": sessions,

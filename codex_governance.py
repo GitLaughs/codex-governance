@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,6 +97,14 @@ DEFAULT_RISK_RULES = (
     RiskRule("vendor_tree", "medium", "vendor/", "vendor 目录通常是外部导入，修改前需说明来源和边界"),
 )
 
+PORTABILITY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("POSIX_HOME", re.compile(r"/home/")),
+    ("MAC_USERS", re.compile(r"/Users/")),
+    ("WINDOWS_DRIVE", re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]")),
+    ("FILE_URI", re.compile(r"file://")),
+    ("HOME_SHORTCUT", re.compile(r"~/")),
+)
+
 
 def config_path() -> Path:
     candidates = (
@@ -161,6 +170,102 @@ def risks_from_config(raw: dict) -> tuple[RiskRule, ...]:
 CONFIG = load_yaml_config()
 DEPARTMENTS = departments_from_config(CONFIG)
 RISK_RULES = risks_from_config(CONFIG)
+
+
+def portability_surface_paths(repo_root: Path = REPO_ROOT) -> list[Path]:
+    paths: set[Path] = set()
+    for root in (
+        repo_root / "docs" / "governance",
+        repo_root / "docs" / "contracts",
+    ):
+        if root.exists():
+            paths.update(path for path in root.rglob("*.md") if path.is_file())
+    for direct_path in (
+        repo_root / "AGENTS.md",
+        repo_root / "README.md",
+        repo_root / "docs" / "18_Codex三省六部协作制.md",
+        repo_root / "tools" / "codex_governance" / "README.md",
+        repo_root / "tools" / "codex_governance" / "API.md",
+    ):
+        if direct_path.exists():
+            paths.add(direct_path)
+    return sorted(paths)
+
+
+def is_inside_inline_code(line: str, start: int) -> bool:
+    return line[:start].count("`") % 2 == 1 and line[start:].count("`") >= 1
+
+
+def is_markdown_link_target(line: str, start: int) -> bool:
+    prefix = line[:start]
+    return "](" in prefix and prefix.rfind("](") > prefix.rfind(")")
+
+
+def classify_portability_match(line: str, start: int, in_fence: bool) -> str:
+    if in_fence or line.startswith("    ") or is_inside_inline_code(line, start):
+        return "example"
+    if is_markdown_link_target(line, start):
+        return "violation"
+    return "violation"
+
+
+def scan_portability(repo_root: Path = REPO_ROOT) -> dict:
+    scanned_files = []
+    violations = []
+    exceptions = []
+    for path in portability_surface_paths(repo_root):
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            relative_path = path.relative_to(repo_root).as_posix()
+        except ValueError:
+            relative_path = str(path)
+        scanned_files.append(relative_path)
+        in_fence = False
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line_number, raw_line in enumerate(lines, start=1):
+            stripped = raw_line.lstrip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+            for pattern_name, pattern in PORTABILITY_PATTERNS:
+                for match in pattern.finditer(raw_line):
+                    record = {
+                        "path": relative_path,
+                        "line": line_number,
+                        "column": match.start() + 1,
+                        "pattern": pattern_name,
+                        "excerpt": raw_line.strip(),
+                    }
+                    classification = classify_portability_match(raw_line, match.start(), in_fence)
+                    record["classification"] = classification
+                    if classification == "violation":
+                        violations.append(record)
+                    else:
+                        exceptions.append(record)
+    return {
+        "scope": "active_governance_surfaces",
+        "scanned_files": scanned_files,
+        "violations": violations,
+        "exceptions": exceptions,
+    }
+
+
+def build_preflight() -> dict:
+    portability = scan_portability(REPO_ROOT)
+    return {
+        "checks": {
+            "portability_reference_scan": {
+                "decision": "PASS" if not portability["violations"] else "REVIEW",
+                "scope": portability["scope"],
+                "scanned_files": portability["scanned_files"],
+                "violations": portability["violations"],
+                "exceptions": portability["exceptions"],
+            }
+        }
+    }
 
 
 def run_git(args: list[str]) -> str:
@@ -286,6 +391,7 @@ def build_report(base: str | None, staged: bool) -> dict:
             for path, risk in all_risks
         ],
         "verify_commands": sorted(verify_commands),
+        "preflight": build_preflight(),
     }
 
 
@@ -326,12 +432,22 @@ def print_text_report(report: dict) -> None:
     for command in report["verify_commands"]:
         print(f"- {command}")
 
+    print_section("治理预检")
+    portability = report["preflight"]["checks"]["portability_reference_scan"]
+    print(
+        f"- portability_reference_scan: {portability['decision']} "
+        f"({len(portability['violations'])} violations, {len(portability['exceptions'])} exceptions)"
+    )
+    for item in portability["violations"][:8]:
+        print(f"  - {item['path']}:{item['line']} [{item['pattern']}] {item['excerpt']}")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Report Codex 三省三部 routing for local changes.")
     parser.add_argument("--base", help="Git ref to compare against, for example HEAD~1")
     parser.add_argument("--staged", action="store_true", help="Only inspect staged changes")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    parser.add_argument("--preflight", action="store_true", help="Return non-zero when governance preflight needs review")
     args = parser.parse_args()
 
     report = build_report(args.base, args.staged)
@@ -339,6 +455,9 @@ def main() -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         print_text_report(report)
+    if args.preflight:
+        portability = report["preflight"]["checks"]["portability_reference_scan"]
+        return 0 if portability["decision"] == "PASS" else 1
     return 0
 
 

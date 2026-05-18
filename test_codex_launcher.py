@@ -143,7 +143,7 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertIn("读完整结果", prompt)
         self.assertIn("/api/zhongshu_inbox?id=zhongshu-test-short", prompt)
 
-    def test_result_notification_forces_continuation_when_work_remains(self):
+    def test_result_notification_allows_department_to_finish_after_mailbox(self):
         codex_launcher.SESSIONS.append(
             {
                 "id": "zhongshu-test-continue",
@@ -156,22 +156,16 @@ class ZhongshuPlanTests(unittest.TestCase):
             "zhongshu-test-continue",
             {
                 "department": "gongchengbu",
-                "summary": "当前只是 xterm 显示层，不是真 PTY。",
-                "risks": ["还需要 websocket 或 stream 接口。"],
-                "next_action": "继续分派工程部实现真实输入输出。",
+                "summary": "已写入 mailbox。",
+                "risks": ["需要中书省复核摘要。"],
+                "next_action": "",
             },
         )
 
-        self.assertIn("部门回传非最终", prompt)
-        self.assertIn("继续推进或回传", prompt)
-        self.assertIn("续派 1-2 个最有价值部门", prompt)
-        self.assertIn("勿闲置空位", prompt)
-        self.assertIn("部门回传不等于部门结束", prompt)
-        self.assertIn("不得因收到一次回传就终止运行中的下属部门", prompt)
-        self.assertIn("至少保留 10 分钟观察窗", prompt)
-        self.assertIn("每 1-2 分钟检查一次 inbox/终端", prompt)
-        self.assertIn("终端无新输出、会话退出或明确报错", prompt)
-        self.assertIn("report_zhongshu_plan", prompt)
+        self.assertIn("mailbox 回传即视为部门本轮结束", prompt)
+        self.assertIn("无需继续观察该部门终端", prompt)
+        self.assertNotIn("观察窗", prompt)
+        self.assertNotIn("终端无新输出", prompt)
 
     def test_department_prompt_uses_mailbox_only_report(self):
         parent_session_id = "zhongshu-test-report"
@@ -212,10 +206,10 @@ class ZhongshuPlanTests(unittest.TestCase):
 
         self.assertIn("合理使用最多 2 个部门空位", zhongshu_prompt)
         self.assertIn("同时派两个", zhongshu_prompt)
-        self.assertIn("部门回传不等于部门结束", zhongshu_prompt)
-        self.assertIn("部门回传不等于部门结束", department_prompt)
-        self.assertIn("至少保留 10 分钟观察窗", zhongshu_prompt)
-        self.assertIn("至少保留 10 分钟观察窗", department_prompt)
+        self.assertIn("mailbox 回传即视为部门本轮结束", zhongshu_prompt)
+        self.assertIn("写完 mailbox 后即可结束本部门会话", department_prompt)
+        self.assertNotIn("观察窗", zhongshu_prompt)
+        self.assertNotIn("观察窗", department_prompt)
         self.assertIn("跑最相关验证", department_prompt)
 
     def test_department_observation_interval_defaults_to_ninety_seconds(self):
@@ -315,6 +309,7 @@ class ZhongshuPlanTests(unittest.TestCase):
                 "started_at": "2026-05-18 20:10:00",
                 "unread_result_count": 1,
                 "child_department_ids": [],
+                "ttyd_url": "http://127.0.0.1:7681/?arg=session",
             }
         )
 
@@ -327,6 +322,32 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertIn("unread: 1", event["transcript"])
         self.assertIn("transcript_preview", event["session"])
         self.assertIn("unread: 1", event["session"]["transcript_preview"])
+        self.assertEqual(event["session"]["ttyd_url"], "http://127.0.0.1:7681/?arg=session")
+
+    def test_build_status_payload_exposes_ttyd_capability(self):
+        payload = codex_launcher.build_status_payload(include_session_lists=False)
+
+        self.assertIn("ttyd", payload)
+        self.assertIn("enabled", payload["ttyd"])
+        self.assertIn("available", payload["ttyd"])
+        self.assertIn("port", payload["ttyd"])
+
+    def test_build_ttyd_command_uses_cwd_port_and_defaults_read_only(self):
+        command = codex_launcher.build_ttyd_command(Path("E:/repo"), 7685)
+
+        self.assertEqual(command[:5], ["ttyd", "-p", "7685", "-w", "E:\\repo"])
+        self.assertNotIn("-W", command)
+        self.assertGreater(len(command), 5)
+
+    def test_build_ttyd_command_can_enable_writable_flag(self):
+        original_writable = codex_launcher.TTYD_WRITABLE
+        try:
+            codex_launcher.TTYD_WRITABLE = True
+            command = codex_launcher.build_ttyd_command(Path("E:/repo"), 7685)
+        finally:
+            codex_launcher.TTYD_WRITABLE = original_writable
+
+        self.assertIn("-W", command)
 
     def test_send_session_input_posts_to_window_and_records_history(self):
         session_id = "zhongshu-input"
@@ -425,12 +446,77 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertIn("run_codex_prompt.py", script)
         self.assertNotIn("stdout=subprocess.PIPE", Path(codex_launcher.RUNNER).read_text(encoding="utf-8"))
 
+    def test_start_codex_terminal_attaches_ttyd_url_when_available(self):
+        started_commands = []
+        original_popen = codex_launcher.subprocess.Popen
+        original_probe = codex_launcher.probe_ttyd
+        original_available = codex_launcher.TTYD_AVAILABLE
+        original_enabled = codex_launcher.TTYD_ENABLED
+        original_port = codex_launcher.TTYD_PORT
+        original_base_url = codex_launcher.TTYD_BASE_URL
+
+        class FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def poll(self):
+                return None
+
+        def fake_popen(command, **kwargs):
+            started_commands.append(command)
+            return FakeProcess(9876 if len(started_commands) == 1 else 7654)
+
+        try:
+            codex_launcher.subprocess.Popen = fake_popen
+            codex_launcher.probe_ttyd = lambda force=False: {
+                "enabled": True,
+                "available": True,
+                "port": 7681,
+                "base_url": "http://127.0.0.1:7681",
+                "command": "ttyd",
+            }
+            codex_launcher.TTYD_AVAILABLE = True
+            codex_launcher.TTYD_ENABLED = True
+            codex_launcher.TTYD_PORT = 7681
+            codex_launcher.TTYD_BASE_URL = "http://127.0.0.1:7681"
+
+            result = codex_launcher.start_codex_terminal(
+                "测试 ttyd",
+                "gongchengbu",
+                "工程部",
+                "gpt-5.4",
+                session_kind=codex_launcher.SESSION_KIND_DEPARTMENT,
+            )
+        finally:
+            codex_launcher.subprocess.Popen = original_popen
+            codex_launcher.probe_ttyd = original_probe
+            codex_launcher.TTYD_AVAILABLE = original_available
+            codex_launcher.TTYD_ENABLED = original_enabled
+            codex_launcher.TTYD_PORT = original_port
+            codex_launcher.TTYD_BASE_URL = original_base_url
+            codex_launcher.SESSIONS.clear()
+            codex_launcher.ACTIVE_PROCESSES.clear()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["session"]["ttyd_url"], "http://127.0.0.1:7681/")
+        self.assertEqual(len(started_commands), 2)
+        self.assertEqual(started_commands[1][:5], ["ttyd", "-p", "7681", "-w", str(codex_launcher.REPO_ROOT)])
+
     def test_dashboard_history_uses_scrollable_session_history(self):
         dashboard = (Path(__file__).resolve().parent / "dashboard.html").read_text(encoding="utf-8")
 
         self.assertIn('class="session-history-scroll"', dashboard)
         self.assertIn(".session-history-scroll", dashboard)
         self.assertIn("overflow-y: auto", dashboard)
+
+    def test_dashboard_terminal_viewer_is_removed_for_rebuild(self):
+        dashboard = (Path(__file__).resolve().parent / "dashboard.html").read_text(encoding="utf-8")
+
+        self.assertNotIn("@xterm/xterm", dashboard)
+        self.assertNotIn("session-terminal", dashboard)
+        self.assertNotIn("EventSource", dashboard)
+        self.assertNotIn("/api/session_stream", dashboard)
+        self.assertNotIn("open-session-ttyd", dashboard)
 
     def test_exited_department_without_report_gets_launcher_fallback(self):
         parent_session_id = "zhongshu-missing-report"
@@ -513,6 +599,59 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertEqual(report["source"], "mailbox")
         self.assertEqual(report["summary"], "真实 mailbox 回传。")
         self.assertEqual(report["verifications_run"], ["python -m unittest"])
+
+    def test_department_report_writes_handoff_packet(self):
+        parent_session_id = "zhongshu-handoff"
+        department_session_id = "gongchengbu-handoff"
+        codex_launcher.SESSIONS.extend(
+            [
+                {
+                    "id": parent_session_id,
+                    "session_kind": codex_launcher.SESSION_KIND_ZHONGSHU,
+                    "status": "running",
+                    "unread_result_count": 0,
+                    "child_department_ids": [department_session_id],
+                },
+                {
+                    "id": department_session_id,
+                    "session_kind": codex_launcher.SESSION_KIND_DEPARTMENT,
+                    "department": "gongchengbu",
+                    "title": "工程部",
+                    "status": "exited",
+                    "parent_session_id": parent_session_id,
+                    "report_status": "pending",
+                    "task": "增强治理交接。",
+                },
+            ]
+        )
+        original_notify = codex_launcher.auto_notify_zhongshu
+        codex_launcher.auto_notify_zhongshu = lambda parent, result: {"ok": True, "status": "test"}
+        try:
+            report = codex_launcher.register_result(
+                parent_session_id,
+                {
+                    "department_session_id": department_session_id,
+                    "department": "gongchengbu",
+                    "summary": "已补 handoff。",
+                    "changed_files": ["tools/codex_governance/codex_launcher.py"],
+                    "verification": ["python -m unittest tools.codex_governance.test_codex_launcher"],
+                    "risks": ["仍需中书省复核。"],
+                    "next_action": "中书省读取交接包后决定是否续派。",
+                },
+                source="mailbox",
+            )
+        finally:
+            codex_launcher.auto_notify_zhongshu = original_notify
+
+        handoff_path = Path(report["handoff_packet"])
+        self.addCleanup(lambda: handoff_path.unlink(missing_ok=True))
+        self.assertTrue(handoff_path.exists())
+        packet = handoff_path.read_text(encoding="utf-8")
+        self.assertIn("# Codex Department Handoff", packet)
+        self.assertIn("department_session_id: gongchengbu-handoff", packet)
+        self.assertIn("## Verification", packet)
+        self.assertIn("python -m unittest tools.codex_governance.test_codex_launcher", packet)
+        self.assertIn("## Next Action", packet)
 
 
 if __name__ == "__main__":
