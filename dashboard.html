@@ -698,7 +698,7 @@
     .browser-terminal-shell {
       display: grid;
       gap: var(--space-3);
-      margin-top: var(--space-4);
+      margin-bottom: var(--space-4);
     }
 
     .browser-terminal-actions {
@@ -710,7 +710,7 @@
 
     .browser-terminal-frame {
       width: 100%;
-      height: clamp(420px, 56vh, 760px);
+      height: clamp(520px, 68vh, 860px);
       border: 1px solid var(--color-neutral-300);
       border-radius: var(--radius-sm);
       background: #0c0f14;
@@ -718,6 +718,35 @@
 
     .browser-terminal-frame[hidden] {
       display: none;
+    }
+
+    .browser-terminal-grid {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: var(--space-3);
+    }
+
+    .browser-terminal-card {
+      min-width: 0;
+      display: grid;
+      gap: var(--space-2);
+      padding: var(--space-2);
+      border: 1px solid var(--color-neutral-200);
+      border-radius: var(--radius-sm);
+      background: var(--color-neutral-50);
+    }
+
+    .browser-terminal-card.active {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary), transparent 84%);
+    }
+
+    .browser-terminal-card .terminal-meta {
+      min-height: 18px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .session-chip {
@@ -802,6 +831,10 @@
         padding: var(--space-3);
       }
 
+      .browser-terminal-grid {
+        grid-template-columns: 1fr;
+      }
+
       .session-toolbar {
         overflow-x: auto;
         padding-bottom: var(--space-1);
@@ -844,6 +877,18 @@
           </div>
         </div>
         <div class="session-stage">
+          <section class="browser-terminal-shell">
+            <div class="panel-header">
+              <h2 class="panel-title">浏览器终端预览</h2>
+              <span class="pill" id="browser-terminal-pill">未启动</span>
+            </div>
+            <div class="browser-terminal-actions">
+              <button class="button primary" id="start-browser-terminal">启动本机终端</button>
+              <button class="button" id="close-browser-terminal" disabled>关闭终端</button>
+              <span class="terminal-meta" id="browser-terminal-status">浏览器终端复用 xterm.js + node-pty，本地 127.0.0.1 + 一次性 token，可直接操作本机 PowerShell。</span>
+            </div>
+            <div class="browser-terminal-grid" id="browser-terminal-grid"></div>
+          </section>
           <section class="session-shell">
             <div class="panel-header">
               <h2 class="panel-title">Codex 会话</h2>
@@ -855,23 +900,6 @@
                 <div id="session-list" class="session-list"></div>
               </div>
             </div>
-          </section>
-          <section class="browser-terminal-shell">
-            <div class="panel-header">
-              <h2 class="panel-title">浏览器终端预览</h2>
-              <span class="pill" id="browser-terminal-pill">未启动</span>
-            </div>
-            <div class="browser-terminal-actions">
-              <button class="button primary" id="start-browser-terminal">启动本机终端</button>
-              <button class="button" id="close-browser-terminal" disabled>关闭终端</button>
-              <span class="terminal-meta" id="browser-terminal-status">浏览器终端复用 xterm.js + node-pty，本地 127.0.0.1 + 一次性 token，可直接操作本机 PowerShell。</span>
-            </div>
-            <iframe
-              class="browser-terminal-frame"
-              id="browser-terminal-frame"
-              title="Codex browser terminal"
-              referrerpolicy="no-referrer"
-              hidden></iframe>
           </section>
         </div>
       </div>
@@ -999,6 +1027,7 @@
     let activeZhongshuSessions = [];
     let activeBrowserTerminals = [];
     let selectedBrowserTerminalId = "";
+    const terminalSlotCount = 3;
     let zhongshuInboxMap = {};
     let pendingPlanSessionId = null;
     let planPollTimer = null;
@@ -1045,8 +1074,108 @@
       return session.session_kind === "zhongshu" ? "中书省" : (session.department || "department");
     }
 
-    function previewButtonLabel(session) {
-      return session.browser_terminal_status === "running" ? "查看终端" : "预览终端";
+    function terminalSwitcherSessions() {
+      const sessions = [];
+      activeZhongshuSessions.forEach((session) => {
+        sessions.push(session);
+        (session.child_departments || []).forEach((child) => sessions.push(child));
+      });
+      return sessions;
+    }
+
+    function terminalFromSession(session) {
+      if (!session || !session.browser_terminal_id || !session.browser_terminal_url) {
+        return null;
+      }
+      return {
+        id: session.browser_terminal_id,
+        status: session.browser_terminal_status || "running",
+        pid: session.pid,
+        url: session.browser_terminal_url,
+        scope: session.browser_terminal_scope || "session",
+        kind: session.browser_terminal_kind || "session_preview",
+        read_only: session.browser_terminal_kind !== "codex_session",
+        title: session.browser_terminal_title || session.title || session.id,
+        session_id: session.id,
+        started_at: session.browser_terminal_started_at || session.started_at
+      };
+    }
+
+    function mergeBrowserTerminals(terminals) {
+      const byId = new Map();
+      [...activeBrowserTerminals, ...(terminals || [])].forEach((terminal) => {
+        if (terminal && terminal.id) {
+          byId.set(terminal.id, terminal);
+        }
+      });
+      terminalSwitcherSessions().forEach((session) => {
+        const terminal = terminalFromSession(session);
+        if (terminal && !byId.has(terminal.id)) {
+          byId.set(terminal.id, terminal);
+        }
+      });
+      return Array.from(byId.values());
+    }
+
+    function ensureTerminalSlots() {
+      const grid = document.getElementById("browser-terminal-grid");
+      while (grid.children.length < terminalSlotCount) {
+        const index = grid.children.length + 1;
+        const card = document.createElement("div");
+        card.className = "browser-terminal-card";
+        card.dataset.terminalSlot = String(index);
+        card.innerHTML = `
+          <p class="terminal-title">终端 ${index}</p>
+          <p class="terminal-meta" data-terminal-slot-meta>等待 Codex 会话</p>
+          <iframe
+            class="browser-terminal-frame"
+            data-terminal-slot-frame
+            title="Codex browser terminal ${index}"
+            referrerpolicy="no-referrer"
+            hidden></iframe>
+        `;
+        grid.appendChild(card);
+      }
+    }
+
+    function orderedRunningTerminals() {
+      const byId = new Map(activeBrowserTerminals.map((terminal) => [terminal.id, terminal]));
+      const ordered = [];
+      terminalSwitcherSessions().forEach((session) => {
+        const terminal = session.browser_terminal_id ? byId.get(session.browser_terminal_id) || terminalFromSession(session) : null;
+        if (terminal && terminal.status === "running") {
+          ordered.push(terminal);
+          byId.delete(terminal.id);
+        }
+      });
+      byId.forEach((terminal) => {
+        if (terminal.status === "running") {
+          ordered.push(terminal);
+        }
+      });
+      return ordered.slice(0, terminalSlotCount);
+    }
+
+    function renderTerminalSlot(card, terminal, index) {
+      const title = card.querySelector(".terminal-title");
+      const meta = card.querySelector("[data-terminal-slot-meta]");
+      const frame = card.querySelector("[data-terminal-slot-frame]");
+      card.classList.toggle("active", Boolean(terminal && terminal.id === selectedBrowserTerminalId));
+
+      if (!terminal) {
+        title.textContent = `终端 ${index + 1}`;
+        meta.textContent = "等待 Codex 会话";
+        frame.hidden = true;
+        frame.removeAttribute("src");
+        return;
+      }
+
+      title.textContent = terminal.title || terminal.session_id || `终端 ${index + 1}`;
+      meta.textContent = `${terminal.kind || "interactive"}${terminal.read_only ? " / 只读" : ""} / PID ${terminal.pid || "-"}`;
+      frame.hidden = false;
+      if (frame.getAttribute("src") !== terminal.url) {
+        frame.setAttribute("src", terminal.url);
+      }
     }
 
     function renderFlow(report) {
@@ -1228,10 +1357,6 @@
         const childHtml = childDepartments.length
           ? childDepartments.map((child) => `
             <p class="terminal-meta">- ${escapeHtml(child.title)} / ${escapeHtml(child.model || "unknown model")} / ${escapeHtml(child.status || "unknown")} / 回传 ${escapeHtml(child.report_status || "pending")}</p>
-            <p class="terminal-meta">
-              <button class="button copy" data-open-session-preview="${escapeHtml(child.id)}">${escapeHtml(previewButtonLabel(child))}</button>
-              ${child.browser_terminal_status ? `<span class="pill">${escapeHtml(child.browser_terminal_status)}</span>` : ""}
-            </p>
           `).join("")
           : `<p class="terminal-meta">- 暂无下挂部门</p>`;
         const queuedHtml = queuedDepartments.length
@@ -1249,10 +1374,6 @@
           <p class="terminal-meta">PID ${escapeHtml(session.pid)} / ${escapeHtml(session.model || "unknown model")} / 未读 ${escapeHtml(session.unread_result_count || 0)}</p>
           <p class="terminal-meta">${escapeHtml(session.prompt_path)}</p>
           <p class="terminal-meta">${escapeHtml(session.started_at)}${session.ended_at ? " -> " + escapeHtml(session.ended_at) : ""}</p>
-          <p class="terminal-meta">
-            <button class="button copy" data-open-session-preview="${escapeHtml(session.id)}">${escapeHtml(previewButtonLabel(session))}</button>
-            ${session.browser_terminal_status ? `<span class="pill">${escapeHtml(session.browser_terminal_status)}</span>` : ""}
-          </p>
           ${session.status !== "running" ? `<button class="button" data-restart-zhongshu="${escapeHtml(session.id)}">恢复中书省</button>` : ""}
           <p class="terminal-meta">下挂部门：</p>
           ${childHtml}
@@ -1278,40 +1399,40 @@
     }
 
     function renderBrowserTerminals(terminals = activeBrowserTerminals) {
-      activeBrowserTerminals = terminals || [];
+      activeBrowserTerminals = mergeBrowserTerminals(terminals || []);
       const selected = activeBrowserTerminals.find((terminal) => terminal.id === selectedBrowserTerminalId);
+      const visibleTerminals = orderedRunningTerminals();
       const running = (selected && selected.status === "running")
         ? selected
-        : activeBrowserTerminals.find((terminal) => terminal.status === "running" && terminal.scope === "session")
-          || activeBrowserTerminals.find((terminal) => terminal.status === "running");
-      const frame = document.getElementById("browser-terminal-frame");
+        : visibleTerminals[0];
+      ensureTerminalSlots();
       const startButton = document.getElementById("start-browser-terminal");
       const closeButton = document.getElementById("close-browser-terminal");
       const pill = document.getElementById("browser-terminal-pill");
       const status = document.getElementById("browser-terminal-status");
+      Array.from(document.getElementById("browser-terminal-grid").children).forEach((card, index) => {
+        renderTerminalSlot(card, visibleTerminals[index], index);
+      });
 
       if (!running) {
         selectedBrowserTerminalId = "";
-        frame.hidden = true;
-        frame.removeAttribute("src");
         startButton.disabled = false;
         closeButton.disabled = true;
         closeButton.removeAttribute("data-browser-terminal-id");
         pill.textContent = "未启动";
-        status.textContent = "浏览器终端复用 xterm.js + node-pty，本地 127.0.0.1 + 一次性 token，可直接操作本机 PowerShell。";
+        status.textContent = "浏览器终端墙固定保留 3 个预览槽；Codex 会话启动后直接嵌入，不通过单 iframe 切换重载。";
         return;
       }
 
       selectedBrowserTerminalId = running.id;
-      frame.hidden = false;
-      if (frame.src !== running.url) {
-        frame.src = running.url;
-      }
       startButton.disabled = true;
       closeButton.disabled = false;
       closeButton.dataset.browserTerminalId = running.id;
-      pill.textContent = `运行中 / PID ${running.pid}`;
-      status.textContent = `${running.title || running.session_id || "terminal"} / ${running.url} / ${running.kind || "interactive"} / ${running.started_at || ""}`;
+      pill.textContent = `运行中 ${visibleTerminals.length} / ${terminalSlotCount}`;
+      status.textContent = `${visibleTerminals.map((terminal) => terminal.title || terminal.session_id || "terminal").join(" | ")}`;
+      Array.from(document.getElementById("browser-terminal-grid").children).forEach((card, index) => {
+        renderTerminalSlot(card, visibleTerminals[index], index);
+      });
     }
 
     function renderReport(report) {
@@ -1499,16 +1620,6 @@
       document.getElementById("launcher-status").textContent = `已启动浏览器终端：${payload.terminal.url}`;
     }
 
-    async function startSessionBrowserTerminal(sessionId) {
-      const payload = await launcherFetch("/api/session_browser_terminal/start", {
-        method: "POST",
-        body: JSON.stringify({ session_id: sessionId })
-      });
-      selectedBrowserTerminalId = payload.terminal.id;
-      await refreshSessions();
-      document.getElementById("launcher-status").textContent = `已打开会话终端预览：${sessionId}`;
-    }
-
     async function closeBrowserTerminal(terminalId) {
       const payload = await launcherFetch("/api/browser_terminal/close", {
         method: "POST",
@@ -1549,14 +1660,6 @@
       if (closeBrowserButton) {
         closeBrowserTerminal(closeBrowserButton.dataset.browserTerminalId).catch((error) => {
           document.getElementById("launcher-status").textContent = `关闭浏览器终端失败：${error.message}`;
-        });
-        return;
-      }
-
-      const sessionPreviewButton = event.target.closest("[data-open-session-preview]");
-      if (sessionPreviewButton) {
-        startSessionBrowserTerminal(sessionPreviewButton.dataset.openSessionPreview).catch((error) => {
-          document.getElementById("launcher-status").textContent = `打开会话终端预览失败：${error.message}`;
         });
         return;
       }

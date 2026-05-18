@@ -520,6 +520,8 @@ class ZhongshuPlanTests(unittest.TestCase):
         self.assertEqual(started[0][1]["env"]["CODEX_TERMINAL_PORT"], "0")
         self.assertEqual(started[0][1]["env"]["CODEX_TERMINAL_SHELL"], "powershell.exe")
         self.assertIn("EncodedCommand", started[0][1]["env"]["CODEX_TERMINAL_SHELL_ARGS"])
+        self.assertEqual(started[0][1]["env"]["CODEX_TERMINAL_READ_ONLY"], "1")
+        self.assertTrue(result["terminal"]["read_only"])
 
     def test_build_ttyd_command_uses_cwd_port_and_defaults_read_only(self):
         command = codex_launcher.build_ttyd_command(Path("E:/repo"), 7685)
@@ -810,9 +812,51 @@ class ZhongshuPlanTests(unittest.TestCase):
     def test_dashboard_exposes_session_browser_preview_controls(self):
         dashboard = (Path(__file__).resolve().parent / "dashboard.html").read_text(encoding="utf-8")
 
-        self.assertIn("data-open-session-preview", dashboard)
-        self.assertIn("/api/session_browser_terminal/start", dashboard)
+        self.assertNotIn("data-open-session-preview", dashboard)
+        self.assertNotIn("data-select-browser-terminal", dashboard)
+        self.assertNotIn("/api/session_browser_terminal/start", dashboard)
         self.assertIn("selectedBrowserTerminalId", dashboard)
+        self.assertNotIn('id="terminal-switcher"', dashboard)
+        self.assertIn('id="browser-terminal-grid"', dashboard)
+        self.assertIn("terminalSlotCount = 3", dashboard)
+        self.assertIn("function ensureTerminalSlots", dashboard)
+        self.assertIn("function orderedRunningTerminals", dashboard)
+        self.assertNotIn("function renderTerminalSwitcher", dashboard)
+        self.assertIn("function terminalFromSession", dashboard)
+        self.assertIn("function mergeBrowserTerminals", dashboard)
+
+    def test_dashboard_places_browser_terminal_before_session_list(self):
+        dashboard = (Path(__file__).resolve().parent / "dashboard.html").read_text(encoding="utf-8")
+
+        self.assertLess(dashboard.index('class="browser-terminal-shell"'), dashboard.index('class="session-shell"'))
+        self.assertIn("grid-template-columns: 1fr", dashboard)
+        self.assertIn("height: clamp(520px, 68vh, 860px)", dashboard)
+
+    def test_browser_terminal_page_uses_stable_full_height_fit(self):
+        terminal_page = (codex_launcher.REPO_ROOT / "tools" / "codex_terminal" / "public" / "index.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("overflow: hidden", terminal_page)
+        self.assertIn("flex: 1 1 auto", terminal_page)
+        self.assertIn("padding: 0", terminal_page)
+        self.assertIn("ResizeObserver", terminal_page)
+        self.assertIn("disableStdin = true", terminal_page)
+        self.assertIn("cursorBlink: false", terminal_page)
+        self.assertIn("cursorBlink = false", terminal_page)
+        self.assertNotIn("term.focus();", terminal_page)
+        self.assertNotIn("cursorBlink = true", terminal_page)
+        self.assertIn("convertEol: false", terminal_page)
+        self.assertNotIn("convertEol: true", terminal_page)
+
+    def test_browser_terminal_server_marks_read_only_sessions(self):
+        server = (codex_launcher.REPO_ROOT / "tools" / "codex_terminal" / "server.js").read_text(encoding="utf-8")
+
+        self.assertIn("CODEX_TERMINAL_READ_ONLY", server)
+        self.assertIn("readOnly", server)
+        self.assertIn("只读预览终端不接收输入", server)
+        self.assertIn("term.onExit", server)
+        self.assertIn("shutdown();", server)
 
     def test_exited_department_without_report_gets_launcher_fallback(self):
         parent_session_id = "zhongshu-missing-report"

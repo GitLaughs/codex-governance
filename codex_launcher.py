@@ -249,6 +249,7 @@ def start_browser_terminal_sidecar(
     scope: str = "global",
     session_id: str = "",
     kind: str = "interactive",
+    read_only: bool = False,
 ) -> dict:
     if scope == "global":
         for item in BROWSER_TERMINALS.values():
@@ -279,6 +280,8 @@ def start_browser_terminal_sidecar(
         env["CODEX_TERMINAL_SHELL"] = shell
     if shell_args:
         env["CODEX_TERMINAL_SHELL_ARGS"] = shell_args
+    if read_only:
+        env["CODEX_TERMINAL_READ_ONLY"] = "1"
 
     process = subprocess.Popen(
         ["node", "server.js", "--host", "127.0.0.1", "--port", "0"],
@@ -334,6 +337,7 @@ def start_browser_terminal_sidecar(
         "cwd": str(cwd),
         "scope": scope,
         "kind": kind,
+        "read_only": read_only,
         "title": title,
         "output_preview": output_lines[-6:],
         "_process": process,
@@ -373,6 +377,7 @@ def start_session_browser_terminal(session_id: str) -> dict:
         scope="session",
         session_id=session_id,
         kind="session_preview",
+        read_only=True,
     )
 
 
